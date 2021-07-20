@@ -672,6 +672,25 @@ class DashCbTx(ProTxBase):
             merkleRootQuorums = vds.read_bytes(32)
         return DashCbTx(version, height, merkleRootMNList, merkleRootQuorums)
 
+class FiroLelantusJsplitTx(ProTxBase):
+    __slots__ = ('lelantusData').split()
+
+    def __str__(self):
+        res = ('lelantusData: %s\n'
+               % (self.lelantusData))
+        return res
+
+    def serialize(self):
+        res = (
+            self.lelantusData
+        )
+        return res
+
+    @classmethod
+    def read_vds(cls, vds):
+        tx = FiroLelantusJsplitTx(vds.input[vds.read_cursor:])
+        vds.read_cursor = len(vds.input)
+        return tx
 
 class DashSubTxRegister(ProTxBase):
     '''Class representing DIP5 SubTxRegister'''
@@ -832,10 +851,7 @@ SPEC_PRO_UP_SERV_TX = 2
 SPEC_PRO_UP_REG_TX = 3
 SPEC_PRO_UP_REV_TX = 4
 SPEC_CB_TX = 5
-SPEC_SUB_TX_REGISTER = 8
-SPEC_SUB_TX_TOPUP = 9
-SPEC_SUB_TX_RESET_KEY = 10
-SPEC_SUB_TX_CLOSE_ACCOUNT = 11
+LELANTUS_JSPLIT = 8
 
 
 SPEC_TX_HANDLERS = {
@@ -844,10 +860,7 @@ SPEC_TX_HANDLERS = {
     SPEC_PRO_UP_REG_TX: DashProUpRegTx,
     SPEC_PRO_UP_REV_TX: DashProUpRevTx,
     SPEC_CB_TX: DashCbTx,
-    SPEC_SUB_TX_REGISTER: DashSubTxRegister,
-    SPEC_SUB_TX_TOPUP: DashSubTxTopup,
-    SPEC_SUB_TX_RESET_KEY: DashSubTxResetKey,
-    SPEC_SUB_TX_CLOSE_ACCOUNT: DashSubTxCloseAccount,
+    LELANTUS_JSPLIT: FiroLelantusJsplitTx,
 }
 
 
@@ -871,20 +884,7 @@ SPEC_TX_NAMES = {
     SPEC_PRO_UP_REG_TX: 'ProUpRegTx',
     SPEC_PRO_UP_REV_TX: 'ProUpRevTx',
     SPEC_CB_TX: 'CbTx',
-    SPEC_SUB_TX_REGISTER: 'SubTxRegister',
-    SPEC_SUB_TX_TOPUP: 'SubTxTopup',
-    SPEC_SUB_TX_RESET_KEY: 'SubTxResetKey',
-    SPEC_SUB_TX_CLOSE_ACCOUNT: 'SubTxCloseAccount',
-
-    # as tx_type is uint16, can make PrivateSend types >= 65536
-    PSTxTypes.NEW_DENOMS: 'PS New Denoms',
-    PSTxTypes.NEW_COLLATERAL: 'PS New Collateral',
-    PSTxTypes.DENOMINATE: 'PS Denominate',
-    PSTxTypes.PAY_COLLATERAL: 'PS Pay Collateral',
-    PSTxTypes.PRIVATESEND: 'PrivateSend',
-    PSTxTypes.PS_MIXING_TXS: 'PS Mixing Txs ...',
-    PSTxTypes.SPEND_PS_COINS: 'Spend PS Coins',
-    PSTxTypes.OTHER_PS_COINS: 'Other PS Coins',
+    LELANTUS_JSPLIT: 'LelantusJsplit'
 }
 
 
