@@ -55,8 +55,8 @@ X11_HASH_FILE=x11_hash-1.4.1-win32.zip
 wget ${X11_HASH_PATH}/${X11_HASH_FILE}
 unzip ${X11_HASH_FILE} && rm ${X11_HASH_FILE}
 
-LSECP256K1_PATH=https://github.com/zebra-lucky/secp256k1/releases/download/0.1
-LSECP256K1_FILE=libsecp256k1-0.1-win32.zip
+LSECP256K1_PATH=https://github.com/zebra-lucky/secp256k1/releases/download/210521
+LSECP256K1_FILE=libsecp256k1-210521-win32.zip
 wget ${LSECP256K1_PATH}/${LSECP256K1_FILE}
 unzip ${LSECP256K1_FILE} && rm ${LSECP256K1_FILE}
 
@@ -86,7 +86,7 @@ X11_HASH_FILE=x11_hash-1.4.1-win64.zip
 wget ${X11_HASH_PATH}/${X11_HASH_FILE}
 unzip ${X11_HASH_FILE} && rm ${X11_HASH_FILE}
 
-LSECP256K1_FILE=libsecp256k1-0.1-win64.zip
+LSECP256K1_FILE=libsecp256k1-210521-win64.zip
 wget ${LSECP256K1_PATH}/${LSECP256K1_FILE}
 unzip ${LSECP256K1_FILE} && rm ${LSECP256K1_FILE}
 
