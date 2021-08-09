@@ -164,6 +164,18 @@ exe = EXE(pyz,
           icon='electrum_firo/gui/icons/electrum-firo.ico',
           name=os.path.join('build\\pyi.win32\\electrum', cmdline_name))
 
+exe_portable = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas + [ ('is_portable', 'README.md', 'DATA' ) ],
+    name=os.path.join('build\\pyi.win32\\electrum-firo', cmdline_name + "-portable.exe"),
+    debug=False,
+    strip=None,
+    upx=False,
+    icon='electrum_firo/gui/icons/electrum-firo.ico',
+    console=False)
+
 # exe with console output
 conexe = EXE(pyz,
           a.scripts,

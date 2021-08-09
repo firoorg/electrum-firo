@@ -1,6 +1,7 @@
 #!/bin/bash
 set -ev
 
+
 cd build
 if [[ -n $TRAVIS_TAG ]]; then
     BUILD_REPO_URL=https://github.com/akhavr/electrum-dash.git
@@ -11,6 +12,11 @@ fi
 
 
 mkdir -p electrum-dash/dist
+
+
+if false
+then
+
 docker run --rm \
     -v $(pwd):/opt \
     -w /opt/electrum-dash \
@@ -26,7 +32,7 @@ docker run --rm \
     -v $(pwd):/opt \
     -w /opt/electrum-dash/contrib/build-linux/appimage \
     -t zebralucky/electrum-dash-winebuild:AppImage40x ./build.sh
-
+fi
 
 BUILD_DIR=/root/build
 TOR_PROXY_VERSION=0.4.2.6
