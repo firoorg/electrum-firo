@@ -27,7 +27,6 @@ docker run --rm \
     -w /opt/electrum-dash/contrib/build-linux/appimage \
     -t zebralucky/electrum-dash-winebuild:AppImage40x ./build.sh
 
-
 BUILD_DIR=/root/build
 TOR_PROXY_VERSION=0.4.2.6
 TOR_PROXY_PATH=https://github.com/zebra-lucky/tor-proxy/releases/download
