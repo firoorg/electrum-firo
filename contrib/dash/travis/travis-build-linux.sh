@@ -1,7 +1,6 @@
 #!/bin/bash
 set -ev
 
-
 cd build
 if [[ -n $TRAVIS_TAG ]]; then
     BUILD_REPO_URL=https://github.com/akhavr/electrum-dash.git
@@ -12,8 +11,6 @@ fi
 
 
 mkdir -p electrum-dash/dist
-
-
 docker run --rm \
     -v $(pwd):/opt \
     -w /opt/electrum-dash \

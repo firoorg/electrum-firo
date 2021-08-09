@@ -148,7 +148,7 @@ if [[ "$OSTYPE" == "linux-gnu" ]]; then
     #cp ${BUILD_BIN_DIR}/${APK_TNAME}-$DASH_ELECTRUM_APK_VERSION-$APP_ANDROID_ARCH-$UAPK_TAIL \
     #    dist/
 
-#    sudo rm -rf build
+    sudo rm -rf build
 
     #read_jks_storepass
 
