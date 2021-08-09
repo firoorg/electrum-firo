@@ -71,6 +71,8 @@ if [[ "$OSTYPE" == "linux-gnu" ]]; then
         dist/
     cp ${BUILD_DIST_DIR}/${NAME}-${DASH_ELECTRUM_VERSION}-setup-win64.exe \
         dist/
+    cp ${BUILD_DIST_DIR}/${NAME}-portable-${DASH_ELECTRUM_VERSION}.exe \
+        dist/
 
     # Build deb packages
     PEP440_PUBVER_PATTERN="^((\d+)!)?"
@@ -146,7 +148,7 @@ if [[ "$OSTYPE" == "linux-gnu" ]]; then
     #cp ${BUILD_BIN_DIR}/${APK_TNAME}-$DASH_ELECTRUM_APK_VERSION-$APP_ANDROID_ARCH-$UAPK_TAIL \
     #    dist/
 
-    sudo rm -rf build
+#    sudo rm -rf build
 
     #read_jks_storepass
 
