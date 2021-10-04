@@ -15,7 +15,7 @@ else:
 
 GITHUB_REF = os.environ.get('GITHUB_REF')
 DASH_ELECTRUM_VERSION = os.environ.get('DASH_ELECTRUM_VERSION')
-ICONS_FILE = 'electrum_firo/gui/icons/electrum-dash.icns'
+ICONS_FILE = 'electrum_firo/gui/icons/electrum-firo.icns'
 
 hiddenimports = []
 hiddenimports += collect_submodules('pkg_resources')  # workaround for https://github.com/pypa/setuptools/issues/1963

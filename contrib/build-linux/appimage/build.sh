@@ -26,6 +26,7 @@ APPIMAGE="$DISTDIR/Firo-Electrum-$VERSION-x86_64.AppImage"
 . "$CONTRIB"/build_tools_util.sh
 
 rm -rf "$CACHEDIR"
+ln -s /var/build/appimage/electrum-dash.AppDir/ "$APPDIR"
 mkdir -p "$APPDIR" "$CACHEDIR" "$DISTDIR"
 mkdir -p "$APPDIR" "$CACHEDIR" "$PIP_CACHE_DIR" "$DISTDIR"
 
@@ -48,8 +49,6 @@ git clone "https://github.com/squashfskit/squashfskit.git" "$BUILDDIR/squashfski
     make -C squashfs-tools mksquashfs || fail "Could not build squashfskit"
 )
 MKSQUASHFS="$BUILDDIR/squashfskit/squashfs-tools/mksquashfs"
-
-cp -r --preserve=links /var/build/appimage/electrum-dash.AppDir/* $APPDIR/
 
 appdir_python() {
   env \

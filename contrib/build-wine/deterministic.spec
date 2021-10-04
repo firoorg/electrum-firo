@@ -124,7 +124,7 @@ a = Analysis(['electrum-firo'],
              binaries=binaries,
              excludes=excludes,
              runtime_hooks=['pyi_runtimehook.py'])
-print("ANALYSIS PASSED")
+
 # http://stackoverflow.com/questions/19055089/
 for d in a.datas:
     if 'pyconfig' in d[0]:

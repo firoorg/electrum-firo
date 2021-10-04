@@ -1,5 +1,5 @@
 #!/bin/bash
-set -evx
+set -ev
 
 mkdir -p dist
 docker run --rm \

@@ -198,7 +198,7 @@ zipp==3.4.1 \
 colorama==0.4.4 \
     --hash=sha256:5941b2b48a20143d2267e95b1c2a7603ce057ee39fd88e7329b0c292aa16869b \
     --hash=sha256:9f47eda37229f68eee03b24b9748937c7dc3868f906e8ba69fbcbdd3bc5dc3e2
-python-bls==0.1.8 \
+python-bls==0.1.9 \
     --hash=sha256:9c89eb9d8a5d667ef9f3422a5ba64cacb52bff47cc3acdb21780152b1cc2c8c8 \
     --hash=sha256:10d2d1148f594366858aebcc07c987dbbcf5b89a0b0b23bd59e6af0d4134601e \
     --hash=sha256:beecbe0c6f42a5e065c7a563c655e17cbc44624ecbd5302a5e733098748a6cf1 \
