@@ -118,7 +118,7 @@ excludes += [
     'PyQt5.QtWinExtras',
 ]
 
-a = Analysis(['run-electrum-firo'],
+a = Analysis(['electrum-firo'],
              hiddenimports=hiddenimports,
              datas=datas,
              binaries=binaries,

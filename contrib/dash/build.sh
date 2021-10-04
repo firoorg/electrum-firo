@@ -1,5 +1,6 @@
 #!/bin/bash
 
+set -xev
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 REPO_DIR="$(realpath $SCRIPT_DIR/../../)"

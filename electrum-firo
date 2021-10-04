@@ -63,6 +63,8 @@ def check_imports():
         import aiorpcx
     except ImportError as e:
         sys.exit(f"Error: {str(e)}. Try 'sudo python3 -m pip install <module-name>'")
+    if not ((0, 18, 7) <= aiorpcx._version < (0, 19)):
+        raise RuntimeError(f'aiorpcX version {aiorpcx._version} does not match required: 0.18.7<=ver<0.19')
     # the following imports are for pyinstaller
     from google.protobuf import descriptor
     from google.protobuf import message
@@ -76,7 +78,9 @@ if not is_android:
     check_imports()
 
 
-from electrum_firo.logging import get_logger, configure_logging
+sys._ELECTRUM_RUNNING_VIA_RUNELECTRUM = True  # used by logging.py
+
+from electrum_firo.logging import get_logger, configure_logging  # import logging submodule first
 from electrum_firo import util
 from electrum_firo import constants
 from electrum_firo import SimpleConfig
@@ -90,6 +94,7 @@ from electrum_firo.commands import get_parser, known_commands, Commands, config_
 from electrum_firo import daemon
 from electrum_firo import keystore
 from electrum_firo.util import create_and_start_event_loop
+from electrum_firo.i18n import set_language
 
 if TYPE_CHECKING:
     import threading
@@ -137,10 +142,6 @@ def init_cmdline(config_options, wallet_path, server, *, config: 'SimpleConfig')
     cmdname = config.get('cmd')
     cmd = known_commands[cmdname]
 
-    if cmdname == 'signtransaction' and config.get('privkey'):
-        cmd.requires_wallet = False
-        cmd.requires_password = False
-
     if cmdname in ['payto', 'paytomany'] and config.get('unsigned'):
         cmd.requires_password = False
 
@@ -184,8 +185,6 @@ def init_cmdline(config_options, wallet_path, server, *, config: 'SimpleConfig')
                 sys_exit(1)
     else:
         password = None
-    if getattr(storage, 'backup_message', None):
-        print(f'{storage.backup_message}\n')
 
     config_options['password'] = config_options.get('password') or password
 
@@ -246,6 +245,11 @@ async def run_offline_command(config, config_options, plugins: 'Plugins'):
                 config_options['password'] = password
             storage.decrypt(password)
         db = WalletDB(storage.read(), manual_upgrades=False)
+        if db.upgrade_done:
+            storage.backup_old_version()
+        if db.check_unfinished_multisig():
+            print_msg("Error: Can not open unfinished multisig wallet.")
+            sys.exit(1)
         wallet = Wallet(db, storage, config=config)
         config_options['wallet'] = wallet
     else:
@@ -273,6 +277,8 @@ async def run_offline_command(config, config_options, plugins: 'Plugins'):
     result = await func(*args, **kwargs)
     # save wallet
     if wallet:
+        if getattr(storage, 'backup_message', None):
+            print_stderr(f'{storage.backup_message}\n')
         wallet.save_db()
     return result
 
@@ -345,6 +351,7 @@ def main():
             'verbosity': '*' if build_config.DEBUG else '',
             'cmd': 'gui',
             'gui': 'kivy',
+            'single_password':True,
             'testnet': args.testnet,
         }
     else:
@@ -375,17 +382,21 @@ def main():
             print_stderr('unknown command:', uri)
             sys.exit(1)
 
-    # singleton
     config = SimpleConfig(config_options)
 
-    print("TESTNET {}".format(config.get('testnet')))
+    # set language as early as possible
+    # Note: we are already too late for strings that are declared in the global scope
+    #       of an already imported module. However, the GUI and the plugins at least have
+    #       not been imported yet.
+    # Note: it is ok to call set_language() again later. E.g. the Qt GUI has additional
+    #       tools to figure out the default language so it will get called again there.
+    set_language(config.get('language'))
+
     if not config.get('force_mainnet'):
         if config.get('testnet'):
             constants.set_testnet()
         elif config.get('regtest'):
             constants.set_regtest()
-    else:
-        print("FORCED MAINNET")
 
     if constants.net == constants.BitcoinMainnet:
         if config_options.get('run_stacktraces'):
