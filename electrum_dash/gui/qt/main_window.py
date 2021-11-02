@@ -1260,7 +1260,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             _('This information is seen by the recipient if you send them a signed payment request.'),
             '\n\n',
             _('For on-chain requests, the address gets reserved until expiration. After that, it might get reused.'), ' ',
-            _('The Dash address never expires and will always be part of this electrum wallet.'), ' ',
+            _('The Firo address never expires and will always be part of this electrum wallet.'), ' ',
             _('You can reuse a Firo address any number of times but it is not good for your privacy.'),
         ])
         grid.addWidget(HelpLabel(_('Expires after') + ' (?)', msg), 2, 0)
