@@ -1,0 +1,200 @@
+name: FIRO Electrum CI
+
+on:
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+  push:
+    branches:
+      - master
+
+jobs:
+
+  linux-appimage:
+    name: Linux Build-Appimage
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v1
+
+      - name: Update and build deps (Linux-Appimage)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get remove php7.1-fpm php7.2-fpm php7.3-fpm php7.4-fpm php7.3-common php7.4-common
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get upgrade -y
+          sudo apt-get update
+          sudo apt-get install -q \
+                 python3 \
+                 python3-dev \
+                 python3-setuptools \
+                 python3-pip \
+                 python3-pyqt5 \
+                 pyqt5-dev-tools \
+                 python-requests \
+                 gettext \
+                 python3-setuptools \
+                 protobuf-compiler \
+                 libusb-1.0-0-dev \
+                 libudev-dev -y
+          python3 -m pip install setuptools wheel
+          python3 -m pip install pytest
+          python3 -m pip install .[full]
+          pyrcc5 icons.qrc -o gui/qt/icons_rc.py
+          protoc --proto_path=lib/ --python_out=lib/ lib/paymentrequest.proto
+          ./contrib/make_locale
+
+      - name: Build (Linux/Appimage)
+        run: |
+          cd contrib/deterministic-build
+          git clone https://github.com/spesmilo/electrum-locale.git
+          cd ../..
+          sudo docker build --no-cache \
+                      -t electrum-firo-appimage-builder-img contrib/build-linux/appimage
+          sudo docker run \
+                          --name electrum-firo-appimage-builder-cont \
+                          -v $PWD:/opt/electrum-firo \
+                          --rm \
+                          --workdir /opt/electrum-firo/contrib/build-linux/appimage \
+                          electrum-firo-appimage-builder-img \
+                          ./build.sh
+          tar -czvf electrum-firo-appimage.tar.gz dist/*.AppImage
+
+      - name: Upload electrum.Appiamge as artifact
+        uses: actions/upload-artifact@v1
+        with:
+          name: electrum-firo-${{ github.sha }}.AppImage.tar.gz
+          path: ./electrum-firo-appimage.tar.gz
+
+  linux-test:
+    name: Linux Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v1
+
+      - name: Install deps (Linux)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get remove php7.1-fpm php7.2-fpm php7.3-fpm php7.4-fpm php7.3-common php7.4-common
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get upgrade -y
+          sudo apt-get update
+          sudo apt-get install -q \
+                 python3 \
+                 python3-dev \
+                 python3-setuptools \
+                 python3-pip \
+                 python3-pyqt5 \
+                 pyqt5-dev-tools \
+                 python-requests \
+                 gettext \
+                 python3-setuptools \
+                 protobuf-compiler \
+                 libusb-1.0-0-dev \
+                 libudev-dev -y
+          python3 -m pip install setuptools wheel
+          python3 -m pip install pytest
+          python3 -m pip install .[full]
+          pyrcc5 icons.qrc -o gui/qt/icons_rc.py
+          protoc --proto_path=lib/ --python_out=lib/ lib/paymentrequest.proto
+          ./contrib/make_locale
+
+      - name: Run Tests (Linux)
+        run: |
+          python3 -m pytest lib/tests/ -s -vv
+
+  macos:
+    name: MacOS Build and Test
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v1
+
+      - name: Build (MacOS)
+        run: |
+          contrib/osx/install-osx.sh
+          contrib/osx/script-osx.sh
+          tar -czvf electrum-firo-macos.dmg.tar.gz contrib/build-osx/dist/*.dmg
+
+      - name: Upload electrum.dmg as artifact
+        uses: actions/upload-artifact@v1
+        with:
+          name: electrum-firo-macos-${{ github.sha }}.dmg.tar.gz
+          path: ./electrum-firo-macos.dmg.tar.gz
+
+      - name: Run Tests (MacOS)
+        run: |
+          sudo python3 -m pip install --upgrade pip
+          sudo python3 -m pip install .[full] --ignore-installed
+          sudo python3 -m pip install pytest
+          sudo python3 -m pytest lib/tests/ -s -vv
+
+  wine-build:
+    name: Wine Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v1
+
+      - name: Update (Linux-Wine)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get remove php7.1-fpm php7.2-fpm php7.3-fpm php7.4-fpm php7.3-common php7.4-common
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get upgrade -y
+          sudo apt-get update
+          sudo apt-get install -q \
+                  wine-development \
+                  dirmngr \
+                  gnupg2 \
+                  p7zip-full -y
+          sudo dpkg --add-architecture i386 && \
+                  sudo apt-get update && \
+                  sudo apt-get install wine32-development -y
+
+      - name: Build (Wine) [on push]
+        if:  github.event_name == 'push'
+        run: |
+          echo ${GITHUB_REF#refs/heads/}
+          echo ${{ github.repository }}
+          cd contrib/build-wine
+          sudo ./build.sh ${GITHUB_REF#refs/heads/} ${{ github.repository }}
+          cd ../..
+          zip electrum-firo-installer contrib/build-wine/dist/*.exe
+
+      - name: Build (Wine) [on pr]
+        if:  github.event_name == 'pull_request'
+        run: |
+          echo ${{ github.head_ref }}
+          echo ${{ github.base_ref }}
+          echo ${{ github.repository }}
+          cd contrib/build-wine
+          sudo ./build.sh ${{ github.base_ref }}  ${{ github.repository }}
+          cd ../..
+          zip electrum-firo-installer contrib/build-wine/dist/*.exe
+
+      - name: Upload electrum-setup.exe as artifact
+        uses: actions/upload-artifact@v1
+        with:
+          name: electrum-firo-win-${{ github.sha }}.zip
+          path: ./electrum-firo-installer.zip
+
+  win-test:
+    name: Windows Tests
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v1
+      - name: Win Deps Install
+        shell: cmd
+        run: |
+          python.exe -m pip install --upgrade pip
+          python.exe -m pip install .[full]
+          python.exe -m pip install pytest
+
+      - name: Win Test Run
+        run: |
+          python.exe -m pytest lib\tests -s -vv

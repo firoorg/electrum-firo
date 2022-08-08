@@ -4,7 +4,7 @@
 .DS_Store
 build/
 dist/
-electrum_firo/locale/
+electrum_dash/locale/
 .devlocaltmp/
 *_trial_temp
 packages
