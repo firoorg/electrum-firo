@@ -115,6 +115,22 @@ if ! [ -x "$(command -v realpath)" ]; then
 fi
 
 
+export SOURCE_DATE_EPOCH=1530212462
+export ZERO_AR_DATE=1 # for macOS
+export PYTHONHASHSEED=22
+# Set the build type, overridden by wine build
+export BUILD_TYPE="${BUILD_TYPE:-$(uname | tr '[:upper:]' '[:lower:]')}"
+# Add host / build flags if the triplets are set
+if [ -n "$GCC_TRIPLET_HOST" ] ; then
+    export AUTOCONF_FLAGS="$AUTOCONF_FLAGS --host=$GCC_TRIPLET_HOST"
+fi
+if [ -n "$GCC_TRIPLET_BUILD" ] ; then
+    export AUTOCONF_FLAGS="$AUTOCONF_FLAGS --build=$GCC_TRIPLET_BUILD"
+fi
+
+export GCC_STRIP_BINARIES="${GCC_STRIP_BINARIES:-0}"
+
+
 function break_legacy_easy_install() {
     # We don't want setuptools sneakily installing dependencies, invisible to pip.
     # This ensures that if setuptools calls distutils which then calls easy_install,

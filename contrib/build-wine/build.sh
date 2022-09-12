@@ -1,56 +1,59 @@
 #!/bin/bash
+#
+# env vars:
+# - ELECBUILD_NOCACHE: if set, forces rebuild of docker image
+# - ELECBUILD_COMMIT: if set, do a fresh clone and git checkout
 
-source ./contrib/dash/travis/electrum_dash_version_env.sh;
-echo wine build version is $DASH_ELECTRUM_VERSION
+set -e
 
-export ELECTRUM_COMMIT_HASH=$(git rev-parse HEAD)
-if [ "$WINEARCH" = "win32" ] ; then
-    export GCC_TRIPLET_HOST="i686-w64-mingw32"
-elif [ "$WINEARCH" = "win64" ] ; then
-    export GCC_TRIPLET_HOST="x86_64-w64-mingw32"
-else
-    fail "unexpected WINEARCH: $WINEARCH"
-fi
-export host_strip="${GCC_TRIPLET_HOST}-strip"
+PROJECT_ROOT="$(dirname "$(readlink -e "$0")")/../.."
+PROJECT_ROOT_OR_FRESHCLONE_ROOT="$PROJECT_ROOT"
+CONTRIB="$PROJECT_ROOT/contrib"
+CONTRIB_WINE="$CONTRIB/build-wine"
 
-./contrib/build-wine/build_secp256k1.sh
-./contrib/build-wine/build_x11_hash.sh
-./contrib/build-wine/build_pyinstaller.sh
+. "$CONTRIB"/build_tools_util.sh
 
-mv $BUILD_DIR/zbarw $WINEPREFIX/drive_c/
+info "Clearing $CONTRIB_WINE/dist..."
+rm -rf "$CONTRIB_WINE"/dist/*
 
-cd $WINEPREFIX/drive_c/electrum-dash
 
-rm -rf build
-rm -rf dist/electrum-dash
-
-cp contrib/build-wine/deterministic.spec .
-cp contrib/dash/pyi_runtimehook.py .
-cp contrib/dash/pyi_tctl_runtimehook.py .
-
-wine python -m pip install --no-warn-script-location dist/pyinstaller/
-rm -rf dist/pyinstaller/
-
-wine python -m pip install --no-dependencies --no-warn-script-location \
-    -r contrib/deterministic-build/requirements.txt
-wine python -m pip install --no-dependencies --no-warn-script-location \
-    -r contrib/deterministic-build/requirements-hw.txt
-wine python -m pip install --no-dependencies --no-warn-script-location \
-    -r contrib/deterministic-build/requirements-binaries.txt
-wine python -m pip install --no-dependencies --no-warn-script-location \
-    -r contrib/deterministic-build/requirements-build-wine.txt
-
-wine pyinstaller --clean -y \
-    --name electrum-firo-$DASH_ELECTRUM_VERSION.exe \
-    deterministic.spec
-
-if [[ $WINEARCH == win32 ]]; then
-    NSIS_EXE="$WINEPREFIX/drive_c/Program Files/NSIS/makensis.exe"
-else
-    NSIS_EXE="$WINEPREFIX/drive_c/Program Files (x86)/NSIS/makensis.exe"
+DOCKER_BUILD_FLAGS=""
+if [ ! -z "$ELECBUILD_NOCACHE" ] ; then
+    info "ELECBUILD_NOCACHE is set. forcing rebuild of docker image."
+    DOCKER_BUILD_FLAGS="--pull --no-cache"
 fi
 
-wine "$NSIS_EXE" /NOCD -V3 \
-    /DPRODUCT_VERSION=$DASH_ELECTRUM_VERSION \
-    /DWINEARCH=$WINEARCH \
-    contrib/build-wine/electrum-dash.nsi
+info "building docker image."
+docker build \
+    $DOCKER_BUILD_FLAGS \
+    -t electrum-wine-builder-img \
+    "$CONTRIB_WINE"
+
+# maybe do fresh clone
+if [ ! -z "$ELECBUILD_COMMIT" ] ; then
+    info "ELECBUILD_COMMIT=$ELECBUILD_COMMIT. doing fresh clone and git checkout."
+    FRESH_CLONE="$CONTRIB_WINE/fresh_clone/electrum" && \
+        rm -rf "$FRESH_CLONE" && \
+        umask 0022 && \
+        git clone "$PROJECT_ROOT" "$FRESH_CLONE" && \
+        cd "$FRESH_CLONE"
+    git checkout "$ELECBUILD_COMMIT"
+    PROJECT_ROOT_OR_FRESHCLONE_ROOT="$FRESH_CLONE"
+else
+    info "not doing fresh clone."
+fi
+
+info "building binary..."
+docker run -it \
+    --name electrum-wine-builder-cont \
+    -v "$PROJECT_ROOT_OR_FRESHCLONE_ROOT":/opt/wine64/drive_c/electrum \
+    --rm \
+    --workdir /opt/wine64/drive_c/electrum/contrib/build-wine \
+    electrum-wine-builder-img \
+    ./make_win.sh
+
+# make sure resulting binary location is independent of fresh_clone
+if [ ! -z "$ELECBUILD_COMMIT" ] ; then
+    mkdir --parents "$PROJECT_ROOT/contrib/build-wine/dist/"
+    cp -f "$FRESH_CLONE/contrib/build-wine/dist"/*.exe "$PROJECT_ROOT/contrib/build-wine/dist/"
+fi
