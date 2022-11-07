@@ -3,8 +3,8 @@
 set -e
 
 # Parameterize
-PYTHON_VERSION=3.9.11
-BUILDDIR=/tmp/electrum-firo-build
+PYTHON_VERSION=3.9.13
+PY_VER_MAJOR="3.9"  # as it appears in fs paths
 PACKAGE=Electrum-Firo
 GIT_REPO=https://github.com/firoorg/electrum-firo
 
@@ -19,8 +19,9 @@ CONTRIB_OSX="$(dirname "$(realpath "$0")")"
 CONTRIB="$CONTRIB_OSX/.."
 PROJECT_ROOT="$CONTRIB/.."
 CACHEDIR="$CONTRIB_OSX/.cache"
+export DLL_TARGET_DIR="$CACHEDIR/dlls"
 
-mkdir -p "$CACHEDIR"
+mkdir -p "$CACHEDIR" "$DLL_TARGET_DIR"
 
 cd "$PROJECT_ROOT"
 
@@ -72,8 +73,8 @@ PKG_FILE="python-${PYTHON_VERSION}-macosx10.9.pkg"
 if [ ! -f "$CACHEDIR/$PKG_FILE" ]; then
     curl -o "$CACHEDIR/$PKG_FILE" "https://www.python.org/ftp/python/${PYTHON_VERSION}/$PKG_FILE"
 fi
-echo "c2073d44c404c661dadbf0cbda55c6e7d681baba9178ed1bdb126d34caa898a9  $CACHEDIR/$PKG_FILE" | shasum -a 256 -c \
-     || fail "python pkg checksum mismatched"
+echo "167c4e2d9f172a617ba6f3b08783cf376dec429386378066eb2f865c98030dd7  $CACHEDIR/$PKG_FILE" | shasum -a 256 -c \
+    || fail "python pkg checksum mismatched"
 sudo installer -pkg "$CACHEDIR/$PKG_FILE" -target / \
     || fail "failed to install python"
 
@@ -94,13 +95,23 @@ source $VENV_DIR/bin/activate
 
 # don't add debug info to compiled C files (e.g. when pip calls setuptools/wheel calls gcc)
 # see https://github.com/pypa/pip/issues/6505#issuecomment-526613584
+# note: this does not seem sufficient when cython is involved (although it is on linux, just not on mac... weird.)
+#       see additional "strip" pass on built files later in the file.
 export CFLAGS="-g0"
 
 info "Installing build dependencies"
+# note: re pip installing from PyPI,
+#       we prefer compiling C extensions ourselves, instead of using binary wheels,
+#       hence "--no-binary :all:" flags. However, we specifically allow
+#       - PyQt5, as it's harder to build from source
+#       - cryptography, as it's harder to build from source
+#       - the whole of "requirements-build-base.txt", which includes pip and friends, as it also includes "wheel",
+#         and I am not quite sure how to break the circular dependence there (I guess we could introduce
+#         "requirements-build-base-base.txt" with just wheel in it...)
 python3 -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
     -Ir ./contrib/deterministic-build/requirements-build-base.txt \
     || fail "Could not install build dependencies (base)"
-python3 -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
+python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
     -Ir ./contrib/deterministic-build/requirements-build-mac.txt \
     || fail "Could not install build dependencies (mac)"
 
@@ -109,8 +120,8 @@ brew install autoconf automake libtool gettext coreutils pkgconfig
 
 info "Building PyInstaller."
 PYINSTALLER_REPO="https://github.com/pyinstaller/pyinstaller.git"
-PYINSTALLER_COMMIT="40c9abce2d8de879e414fd377c933dccaab1e156"
-# ^ tag "4.2"
+PYINSTALLER_COMMIT="fbf7948be85177dd44b41217e9f039e1d176de6b"
+# ^ tag "5.3"
 # TODO test newer versions of pyinstaller for build-reproducibility.
 #      we are using this version for now due to change in code-signing behaviour
 #      (https://github.com/pyinstaller/pyinstaller/pull/5581)
@@ -140,7 +151,6 @@ PYINSTALLER_COMMIT="40c9abce2d8de879e414fd377c933dccaab1e156"
     popd
     # sanity check bootloader is there:
     [[ -e "PyInstaller/bootloader/Darwin-64bit/runw" ]] || fail "Could not find runw in target dir!"
-    rm pyinstaller.py  # workaround for https://github.com/pyinstaller/pyinstaller/pull/6701
 ) || fail "PyInstaller build failed"
 info "Installing PyInstaller."
 python3 -m pip install --no-build-isolation --no-dependencies --no-warn-script-location "$CACHEDIR/pyinstaller"
@@ -155,9 +165,6 @@ rm -rf ./dist
 
 git submodule update --init
 
-rm  -rf "$BUILDDIR" > /dev/null 2>&1
-mkdir "$BUILDDIR"
-
 info "generating locale"
 (
     if ! which msgfmt > /dev/null 2>&1; then
@@ -171,43 +178,46 @@ info "generating locale"
 ) || fail "failed generating locale"
 
 
-if [ ! -f "$PROJECT_ROOT"/electrum_firo/libsecp256k1.0.dylib ]; then
+if [ ! -f "$DLL_TARGET_DIR/libsecp256k1.0.dylib" ]; then
     info "Building libsecp256k1 dylib..."
     "$CONTRIB"/make_libsecp256k1.sh || fail "Could not build libsecp"
 else
     info "Skipping libsecp256k1 build: reusing already built dylib."
 fi
-cp "$PROJECT_ROOT"/electrum_firo/libsecp256k1.0.dylib "$CONTRIB"/osx
+cp -f "$DLL_TARGET_DIR/libsecp256k1.0.dylib" "$PROJECT_ROOT/electrum/" || fail "Could not copy libsecp256k1 dylib"
 
-if [ ! -f "$PROJECT_ROOT"/electrum_firo/libzbar.0.dylib ]; then
+if [ ! -f "$DLL_TARGET_DIR/libzbar.0.dylib" ]; then
     info "Building ZBar dylib..."
     "$CONTRIB"/make_zbar.sh || fail "Could not build ZBar dylib"
 else
     info "Skipping ZBar build: reusing already built dylib."
 fi
-cp "$PROJECT_ROOT"/electrum_firo/libzbar.0.dylib "$CONTRIB"/osx
+cp -f "$DLL_TARGET_DIR/libzbar.0.dylib" "$PROJECT_ROOT/electrum/" || fail "Could not copy ZBar dylib"
 
-if [ ! -f "$PROJECT_ROOT"/electrum_firo/libusb-1.0.dylib ]; then
+if [ ! -f "$DLL_TARGET_DIR/libusb-1.0.dylib" ]; then
     info "Building libusb dylib..."
     "$CONTRIB"/make_libusb.sh || fail "Could not build libusb dylib"
 else
     info "Skipping libusb build: reusing already built dylib."
 fi
-cp "$PROJECT_ROOT"/electrum_firo/libusb-1.0.dylib "$CONTRIB"/osx
+cp -f "$DLL_TARGET_DIR/libusb-1.0.dylib" "$PROJECT_ROOT/electrum/" || fail "Could not copy libusb dylib"
 
 
 info "Installing requirements..."
-python3 -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
+python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: \
+    --no-warn-script-location \
     -Ir ./contrib/deterministic-build/requirements.txt \
     || fail "Could not install requirements"
 
 info "Installing hardware wallet requirements..."
-python3 -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
+python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: --only-binary cryptography \
+    --no-warn-script-location \
     -Ir ./contrib/deterministic-build/requirements-hw.txt \
     || fail "Could not install hardware wallet requirements"
 
 info "Installing dependencies specific to binaries..."
-python3 -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
+python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: --only-binary PyQt5,PyQt5-Qt5,cryptography \
+    --no-warn-script-location \
     -Ir ./contrib/deterministic-build/requirements-binaries-mac.txt \
     || fail "Could not install dependencies specific to binaries"
 
@@ -215,19 +225,18 @@ info "Building $PACKAGE..."
 python3 -m pip install --no-build-isolation --no-dependencies \
     --no-warn-script-location . > /dev/null || fail "Could not build $PACKAGE"
 
+# strip debug symbols of some compiled libs
+# - hidapi (hid.cpython-39-darwin.so) in particular is not reproducible without this
+find "$VENV_DIR/lib/python$PY_VER_MAJOR/site-packages/" -type f -name '*.so' -print0 \
+    | xargs -0 -t strip -x
+
 info "Faking timestamps..."
 find . -exec touch -t '200101220000' {} + || true
 
-VERSION=`git describe --tags --dirty --always`
+VERSION=$(git describe --tags --dirty --always)
 
 info "Building binary"
-pyinstaller --noconfirm --ascii --clean --name $VERSION contrib/osx/osx.spec || fail "Could not build binary"
-
-info "Adding bitcoin URI types to Info.plist"
-plutil -insert 'CFBundleURLTypes' \
-	-xml '<array><dict> <key>CFBundleURLName</key> <string>bitcoin</string> <key>CFBundleURLSchemes</key> <array><string>bitcoin</string><string>lightning</string></array> </dict></array>' \
-	-- dist/$PACKAGE.app/Contents/Info.plist \
-	|| fail "Could not add keys to Info.plist. Make sure the program 'plutil' exists and is installed."
+ELECTRUM_VERSION=$VERSION pyinstaller --noconfirm --ascii --clean contrib/osx/osx.spec || fail "Could not build binary"
 
 DoCodeSignMaybe "app bundle" "dist/${PACKAGE}.app"
 
