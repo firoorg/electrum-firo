@@ -23,8 +23,8 @@ export GCC_STRIP_BINARIES="1"
 
 export CONTRIB="$here/.."
 export PROJECT_ROOT="$CONTRIB/.."
-export CACHEDIR="$here/.cache/$WIN_ARCH"
-export PIP_CACHE_DIR="$CACHEDIR/wine_pip_cache"
+export CACHEDIR="$here/.cache/$WIN_ARCH/build"
+export PIP_CACHE_DIR="$here/.cache/$WIN_ARCH/wine_pip_cache"
 export WINE_PIP_CACHE_DIR="c:/electrum/contrib/build-wine/.cache/$WIN_ARCH/wine_pip_cache"
 export DLL_TARGET_DIR="$CACHEDIR/dlls"
 
@@ -52,7 +52,7 @@ if [ -f "$DLL_TARGET_DIR/libzbar-0.dll" ]; then
 else
     (
         # As debian bullseye doesn't provide win-iconv-mingw-w64-dev, we need to build it:
-        WIN_ICONV_COMMIT="c9df88a284d448da5434c6ad2737b54a907f888c"
+        WIN_ICONV_COMMIT="9f98392dfecadffd62572e73e9aba878e03496c4"
         # ^ tag "v0.0.8"
         info "Building win-iconv..."
         cd "$CACHEDIR"
@@ -68,7 +68,7 @@ else
         git clean -dfxq
         git checkout "${WIN_ICONV_COMMIT}^{commit}"
 
-        CC="${GCC_TRIPLET_HOST}-gcc" make -j4 || fail "Could not build win-iconv"
+        CC="${GCC_TRIPLET_HOST}-gcc" make -j1 || fail "Could not build win-iconv"
         # FIXME avoid using sudo
         sudo make install prefix="/usr/${GCC_TRIPLET_HOST}"  || fail "Could not install win-iconv"
     )
@@ -78,7 +78,7 @@ fi
 if [ -f "$DLL_TARGET_DIR/libusb-1.0.dll" ]; then
     info "libusb already built, skipping"
 else
-    source "$CONTRIB"/make_libusb.sh || fail "Could not build libusb"
+    "$CONTRIB"/make_libusb.sh || fail "Could not build libusb"
 fi
 
 "$here/prepare-wine.sh" || fail "prepare-wine failed"

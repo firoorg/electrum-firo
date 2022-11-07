@@ -1,17 +1,16 @@
 # -*- mode: python -*-
-import sys
+
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs
 
+import sys, os
 
-for i, x in enumerate(sys.argv):
-    if x == '--name':
-        cmdline_name = sys.argv[i+1]
-        break
-else:
+cmdline_name = os.environ.get("ELECTRUM_CMDLINE_NAME")
+if not cmdline_name:
     raise Exception('no name')
 
 home = 'C:\\electrum\\'
 
+# see https://github.com/pyinstaller/pyinstaller/issues/2005
 hiddenimports = []
 hiddenimports += collect_submodules('pkg_resources')  # workaround for https://github.com/pypa/setuptools/issues/1963
 hiddenimports += collect_submodules('trezorlib')
@@ -19,7 +18,9 @@ hiddenimports += collect_submodules('safetlib')
 hiddenimports += collect_submodules('btchip')
 hiddenimports += collect_submodules('keepkeylib')
 hiddenimports += collect_submodules('websocket')
+
 hiddenimports += ['PyQt5.QtPrintSupport']  # needed by Revealer
+
 
 binaries = []
 
@@ -37,13 +38,13 @@ datas = [
     (home+'electrum_firo/wordlist', 'electrum_firo/wordlist'),
     (home+'electrum_firo/gui/icons', 'electrum_firo/gui/icons'),
 ]
-
 datas += collect_data_files('trezorlib')
 datas += collect_data_files('safetlib')
 datas += collect_data_files('btchip')
 datas += collect_data_files('keepkeylib')
 
 
+# We don't put these files in to actually include them in the script but to make the Analysis method scan them for imports
 a = Analysis([home+'electrum-firo',
               home+'electrum_firo',
               home+'electrum_firo.base_crash_reporter',
@@ -77,7 +78,8 @@ a = Analysis([home+'electrum-firo',
              hiddenimports=hiddenimports,
              hookspath=[])
 
-# http://stackoverflow.com/questions/19055089/
+
+# http://stackoverflow.com/questions/19055089/pyinstaller-onefile-warning-pyconfig-h-when-importing-scipy-or-scipy-signal
 for d in a.datas:
     if 'pyconfig' in d[0]:
         a.datas.remove(d)
@@ -101,16 +103,22 @@ for x in a.datas.copy():
             a.datas.remove(x)
             print('----> Removed x =', x)
 
+# not reproducible (see #7739):
 print("Removing *.dist-info/ from datas:")
 for x in a.datas.copy():
     if ".dist-info\\" in x[0].lower():
         a.datas.remove(x)
         print('----> Removed x =', x)
 
+
 # hotfix for #3171 (pre-Win10 binaries)
 a.binaries = [x for x in a.binaries if not x[1].lower().startswith(r'c:\windows')]
 
 pyz = PYZ(a.pure)
+
+
+#####
+# "standalone" exe with all dependencies packed into it
 
 exe_standalone = EXE(
     pyz,
@@ -124,6 +132,7 @@ exe_standalone = EXE(
     upx=False,
     icon=home+'electrum_firo/gui/icons/electrum-firo.ico',
     console=False)
+    # console=True makes an annoying black box pop up, but it does make Electrum output command line commands, with this turned off no output will be given but commands can still be used
 
 exe_portable = EXE(
     pyz,
@@ -150,7 +159,6 @@ exe_inside_setup_noconsole = EXE(
     upx=False,
     icon=home+'electrum_firo/gui/icons/electrum-firo.ico',
     console=False)
-
 
 exe_inside_setup_console = EXE(
     pyz,
