@@ -10,7 +10,7 @@ PACKAGES="$PROJECT_ROOT"/packages/
 test -n "$CONTRIB" -a -d "$CONTRIB" || exit
 
 if [ -d "$PACKAGES" ]; then
-  rm -r "$PACKAGES"
+    rm -r "$PACKAGES"
 fi
 
 # create virtualenv
@@ -50,4 +50,3 @@ export BUILD_TIME="$(LC_ALL=C TZ=UTC date +'%H:%M:%S' -d @$SOURCE_DATE_EPOCH)"
 #       instead of downloading the latest ones
 python3 -m pip install --no-build-isolation --no-compile --no-dependencies --no-binary :all: \
     -r "$CONTRIB"/deterministic-build/requirements.txt -t "$CONTRIB"/../packages
-

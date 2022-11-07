@@ -2,7 +2,7 @@
 # from https://docs.appimage.org/introduction/concepts.html :
 # "[AppImages] should be built on the oldest possible system, allowing them to run on newer system[s]"
 
-FROM debian:buster@sha256:fb9654aac57319592f1d51497c62001e7033eddf059355408a0b53f7c71f8d5f
+FROM debian:buster@sha256:e83854c9fb469daa7273d73c43a3fe5ae2da77cb40d3d34282a9af09a9db49f9
 
 ENV LC_ALL=C.UTF-8 LANG=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
@@ -17,6 +17,7 @@ COPY apt.preferences /etc/apt/preferences.d/snapshot
 
 RUN apt-get update -q && \
     apt-get install -qy --allow-downgrades \
+        sudo \
         git \
         wget \
         make \
@@ -24,6 +25,7 @@ RUN apt-get update -q && \
         autoconf \
         libtool \
         autopoint \
+        pkg-config \
         xz-utils \
         libssl-dev \
         libssl1.1 \
@@ -41,9 +43,10 @@ RUN apt-get update -q && \
         gettext \
         libzbar0 \
         libdbus-1-3 \
+        xutils-dev \
         libxkbcommon0 \
         libxkbcommon-x11-0 \
-        libxcb1 \
+        libxcb1-dev \
         libxcb-xinerama0 \
         libxcb-randr0 \
         libxcb-render0 \
@@ -56,6 +59,7 @@ RUN apt-get update -q && \
         libxcb-image0 \
         libxcb-keysyms1 \
         libxcb-util0 \
+        #libxcb-util1 \
         libxcb-render-util0 \
         libx11-xcb1 \
         libc6-dev \
