@@ -2,10 +2,10 @@
 set -ev
 
 if [[ -n $TRAVIS_TAG ]]; then
-    PYTHON_VERSION=3.7.9
+    PYTHON_VERSION=3.9.7
     PYFTP=https://www.python.org/ftp/python/$PYTHON_VERSION
     PYPKG_NAME=python-$PYTHON_VERSION-macosx10.9.pkg
-    PY_SHA256=bf54a14eef23467991e8c7a88c7307762e484c024a94ec1ee292ac1db3d41fc9
+    PY_SHA256=f40f7407d20f88a6a64678b6586853de16cc5d7d07c82a8a2a7e43bba59dbae5  
     echo "$PY_SHA256  $PYPKG_NAME" > $PYPKG_NAME.sha256
     curl -O $PYFTP/$PYPKG_NAME
     shasum -a256 -s -c $PYPKG_NAME.sha256

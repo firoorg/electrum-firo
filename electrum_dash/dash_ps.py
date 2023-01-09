@@ -23,7 +23,7 @@ from .dash_ps_util import (PSOptsMixin, PSUtilsMixin, PSGUILogHandler,
 from .dash_tx import PSTxTypes, SPEC_TX_NAMES, CTxIn
 from .logging import Logger
 from .transaction import Transaction, PartialTxOutput, PartialTransaction
-from .util import (NoDynamicFeeEstimates, log_exceptions, SilentTaskGroup,
+from .util import (NoDynamicFeeEstimates, log_exceptions, OldTaskGroup,
                    NotEnoughFunds, bfh, is_android)
 from .i18n import _
 
@@ -357,7 +357,7 @@ class PSManager(Logger, PSKeystoreMixin, PSDataMixin, PSOptsMixin,
 
         assert not self.main_taskgroup
         self._not_enough_funds = False
-        self.main_taskgroup = main_taskgroup = SilentTaskGroup()
+        self.main_taskgroup = main_taskgroup = OldTaskGroup()
         self.logger.info('Starting PrivateSend Mixing')
 
         async def main():

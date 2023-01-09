@@ -7,13 +7,14 @@ from functools import partial
 from collections import OrderedDict
 from enum import IntEnum
 
-from aiorpcx import TaskGroup
+from . import constants, util
 
 from electrum_firo import bitcoin
 from electrum_firo.i18n import _
 from electrum_firo.logging import Logger
 from electrum_firo.network import Network
 from electrum_firo.plugin import BasePlugin
+from .util import OldTaskGroup
 
 
 def balance_total(*, confirmed, unconfirmed):
@@ -220,7 +221,7 @@ class ScanOverGapPlugin(BasePlugin, Logger):
                 self.logger.info(f'total count to scan: {to_scan_cnt}')
             if not to_scan_cnt:
                 return
-            async with TaskGroup() as group:
+            async with OldTaskGroup() as group:
                 for s in scans:
                     for i, addr in s.addrs.items():
                         if i in s.balances:

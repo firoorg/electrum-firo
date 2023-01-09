@@ -28,14 +28,12 @@ import itertools
 from collections import defaultdict
 from typing import TYPE_CHECKING, Dict, Optional, Set, Tuple, NamedTuple, Sequence, List
 
-from aiorpcx import TaskGroup
-
 from . import bitcoin, util
 from .bitcoin import COINBASE_MATURITY
 from .dash_ps import PSManager
 from .dash_ps_util import PSCoinRounds, PS_MIXING_TX_TYPES
 from .dash_tx import tx_header_to_tx_type
-from .util import profiler, bfh, TxMinedInfo, UnrelatedTransactionException, with_lock
+from .util import profiler, bfh, TxMinedInfo, UnrelatedTransactionException, with_lock, OldTaskGroup
 from .protx import ProTxManager
 from .transaction import Transaction, TxOutput, TxInput, PartialTxInput, TxOutpoint, PartialTransaction
 from .synchronizer import Synchronizer
@@ -240,7 +238,7 @@ class AddressSynchronizer(Logger):
     async def stop(self):
         if self.network:
             try:
-                async with TaskGroup() as group:
+                async with OldTaskGroup() as group:
                     if self.synchronizer:
                         await group.spawn(self.synchronizer.stop())
                     if self.verifier:

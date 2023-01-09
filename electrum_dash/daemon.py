@@ -36,13 +36,13 @@ import json
 
 import aiohttp
 from aiohttp import web, client_exceptions
-from aiorpcx import TaskGroup, timeout_after, TaskTimeout, ignore_after
+from aiorpcx import timeout_after, TaskTimeout, ignore_after
 
 from . import util
 from .network import Network
 from .util import (json_decode, to_bytes, to_string, profiler, standardize_path, constant_time_compare)
 from .invoices import PR_PAID, PR_EXPIRED
-from .util import log_exceptions, ignore_exceptions, randrange
+from .util import log_exceptions, ignore_exceptions, randrange, OldTaskGroup
 from .wallet import Wallet, Abstract_Wallet
 from .storage import WalletStorage
 from .wallet_db import WalletDB
@@ -426,7 +426,7 @@ class Daemon(Logger):
 
         self.stopping_soon = threading.Event()
         self.stopped_event = asyncio.Event()
-        self.taskgroup = TaskGroup()
+        self.taskgroup = OldTaskGroup()
         asyncio.run_coroutine_threadsafe(self._run(jobs=daemon_jobs), self.asyncio_loop)
 
     @log_exceptions
@@ -438,8 +438,6 @@ class Daemon(Logger):
             async with self.taskgroup as group:
                 [await group.spawn(job) for job in jobs]
                 await group.spawn(asyncio.Event().wait)  # run forever (until cancel)
-        except asyncio.CancelledError:
-            raise
         except Exception as e:
             self.logger.exception("taskgroup died.")
         finally:
@@ -541,12 +539,12 @@ class Daemon(Logger):
 
             async def stop_async():
                 self.logger.info("stopping all wallets")
-                async with TaskGroup() as group:
+                async with OldTaskGroup() as group:
                     for k, wallet in self._wallets.items():
                         await group.spawn(wallet.stop())
                 self.logger.info("stopping network and taskgroup")
                 async with ignore_after(2):
-                    async with TaskGroup() as group:
+                    async with OldTaskGroup() as group:
                         if self.network:
                             await group.spawn(self.network.stop(full_shutdown=True))
                         await group.spawn(self.taskgroup.cancel_remaining())

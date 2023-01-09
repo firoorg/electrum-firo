@@ -33,7 +33,6 @@ import random
 import re
 import threading
 import time
-from aiorpcx import TaskGroup
 from binascii import unhexlify
 from bls_py import bls
 from collections import defaultdict, deque
@@ -49,7 +48,7 @@ from .dash_tx import str_ip
 from .i18n import _
 from .logging import Logger
 from .simple_config import SimpleConfig
-from .util import (log_exceptions, ignore_exceptions, SilentTaskGroup,
+from .util import (log_exceptions, ignore_exceptions, OldTaskGroup,
                    make_aiohttp_session, make_dir, bfh, bh2u)
 
 
@@ -437,7 +436,7 @@ class DashNet(Logger):
             return
 
         assert not self.main_taskgroup
-        self.main_taskgroup = main_taskgroup = SilentTaskGroup()
+        self.main_taskgroup = main_taskgroup = OldTaskGroup()
         assert not self.peers
         assert not self.connecting and not self.peers_queue
         self.peers_queue = queue.Queue()

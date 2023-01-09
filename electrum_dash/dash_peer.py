@@ -40,7 +40,7 @@ from .dash_msg import (SporkID, DashType, DashCmd, DashVersionMsg,
 from .ecc import ECPubkey
 from .interface import GracefulDisconnect
 from .logging import Logger
-from .util import (log_exceptions, ignore_exceptions, SilentTaskGroup,
+from .util import (log_exceptions, ignore_exceptions, OldTaskGroup,
                    MySocksProxy)
 from .version import ELECTRUM_VERSION
 
@@ -115,7 +115,7 @@ class DashPeer(Logger):
 
         main_group_coro = self.dash_net.main_taskgroup.spawn(self.run())
         asyncio.run_coroutine_threadsafe(main_group_coro, self.loop)
-        self.group = SilentTaskGroup()
+        self.group = OldTaskGroup()
 
     def diagnostic_name(self):
         return f'{self.host}:{self.port}'
