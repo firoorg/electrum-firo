@@ -8,20 +8,20 @@ fi
 
 cd build
 if [[ -n $TRAVIS_TAG ]]; then
-    BUILD_REPO_URL=https://github.com/akhavr/electrum-dash.git
-    git clone --branch $TRAVIS_TAG $BUILD_REPO_URL electrum-dash
+    BUILD_REPO_URL=https://github.com/firstcryptoman/electrum-firo.git
+    git clone --branch $TRAVIS_TAG $BUILD_REPO_URL electrum-firo
 else
-    git clone .. electrum-dash
+    git clone .. electrum-firo
 fi
 
 
-pushd electrum-dash
+pushd electrum-firo
 ./contrib/make_locale
 find . -name '*.po' -delete
 find . -name '*.pot' -delete
 popd
 
-pushd electrum-dash/contrib/android
+pushd electrum-firo/contrib/android
 python3 -m virtualenv --python=python3 atlas_env
 source atlas_env/bin/activate
 pip install Kivy Pillow
@@ -49,10 +49,10 @@ if [[ $ELECTRUM_MAINNET == "false" ]]; then
     DOCKER_CMD="$DOCKER_CMD release-testnet"
 fi
 
-sudo chown -R 1000 electrum-dash
+sudo chown -R 1000 electrum-firo
 docker run --rm \
     --env APP_ANDROID_ARCH=$APP_ANDROID_ARCH \
     --env APK_VERSION_CODE=$DASH_ELECTRUM_VERSION_CODE \
-    -v $(pwd)/electrum-dash:/home/buildozer/build \
+    -v $(pwd)/electrum-firo:/home/buildozer/build \
     -t zebralucky/electrum-dash-winebuild:Kivy40x bash -c \
     "$DOCKER_CMD"

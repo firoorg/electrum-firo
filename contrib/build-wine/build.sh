@@ -28,9 +28,6 @@ cp contrib/build-wine/deterministic.spec .
 cp contrib/dash/pyi_runtimehook.py .
 cp contrib/dash/pyi_tctl_runtimehook.py .
 
-wine python -m pip install --no-warn-script-location dist/pyinstaller/
-rm -rf dist/pyinstaller/
-
 wine python -m pip install --no-dependencies --no-warn-script-location \
     -r contrib/deterministic-build/requirements.txt
 wine python -m pip install --no-dependencies --no-warn-script-location \

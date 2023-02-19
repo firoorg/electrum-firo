@@ -3,19 +3,19 @@ set -ev
 
 cd build
 if [[ -n $TRAVIS_TAG ]]; then
-    BUILD_REPO_URL=https://github.com/akhavr/electrum-dash.git
-    git clone --branch $TRAVIS_TAG $BUILD_REPO_URL electrum-dash
+    BUILD_REPO_URL=https://github.com/firstcryptoman/electrum-firo.git
+    git clone --branch $TRAVIS_TAG $BUILD_REPO_URL electrum-firo
 else
-    git clone .. electrum-dash
+    git clone .. electrum-firo
 fi
 
 
-mkdir -p electrum-dash/dist
+mkdir -p electrum-firo/dist
 docker run --rm \
     -v $(pwd):/opt \
-    -w /opt/electrum-dash \
+    -w /opt/electrum-firo \
     -t zebralucky/electrum-dash-winebuild:Linux40x \
-    /opt/electrum-dash/contrib/build-linux/sdist/build.sh
+    /opt/electrum-firo/contrib/build-linux/sdist/build.sh
 
 
 sudo find . -name '*.po' -delete
@@ -24,13 +24,13 @@ sudo find . -name '*.pot' -delete
 
 docker run --rm \
     -v $(pwd):/opt \
-    -w /opt/electrum-dash/contrib/build-linux/appimage \
+    -w /opt/electrum-firo/contrib/build-linux/appimage \
     -t zebralucky/electrum-dash-winebuild:AppImage40x ./build.sh
 
 BUILD_DIR=/root/build
 TOR_PROXY_VERSION=0.4.5.7
 TOR_PROXY_PATH=https://github.com/zebra-lucky/tor-proxy/releases/download
-TOR_DIST=electrum-dash/dist/tor-proxy-setup.exe
+TOR_DIST=electrum-firo/dist/tor-proxy-setup.exe
 
 TOR_FILE=${TOR_PROXY_VERSION}/tor-proxy-${TOR_PROXY_VERSION}-win32-setup.exe
 wget -O ${TOR_DIST} ${TOR_PROXY_PATH}/${TOR_FILE}
@@ -59,10 +59,10 @@ docker run --rm \
     -e PYHOME=$PYHOME \
     -e BUILD_DIR=$BUILD_DIR \
     -v $(pwd):$BUILD_DIR \
-    -v $(pwd)/electrum-dash/:$WINEPREFIX/drive_c/electrum-dash \
-    -w $BUILD_DIR/electrum-dash \
+    -v $(pwd)/electrum-firo/:$WINEPREFIX/drive_c/electrum-firo \
+    -w $BUILD_DIR/electrum-firo \
     -t zebralucky/electrum-dash-winebuild:Wine41x \
-    $BUILD_DIR/electrum-dash/contrib/build-wine/build.sh
+    $BUILD_DIR/electrum-firo/contrib/build-wine/build.sh
 
 
 export WINEARCH=win64
@@ -91,7 +91,7 @@ docker run --rm \
     -e PYHOME=$PYHOME \
     -e BUILD_DIR=$BUILD_DIR \
     -v $(pwd):$BUILD_DIR \
-    -v $(pwd)/electrum-dash/:$WINEPREFIX/drive_c/electrum-dash \
-    -w $BUILD_DIR/electrum-dash \
+    -v $(pwd)/electrum-firo/:$WINEPREFIX/drive_c/electrum-firo \
+    -w $BUILD_DIR/electrum-firo \
     -t zebralucky/electrum-dash-winebuild:Wine41x \
-    $BUILD_DIR/electrum-dash/contrib/build-wine/build.sh
+    $BUILD_DIR/electrum-firo/contrib/build-wine/build.sh

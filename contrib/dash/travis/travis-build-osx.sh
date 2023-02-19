@@ -11,16 +11,16 @@ echo osx build version is $DASH_ELECTRUM_VERSION
 
 cd build
 if [[ -n $TRAVIS_TAG ]]; then
-    BUILD_REPO_URL=https://github.com/akhavr/electrum-dash.git
-    git clone --branch $TRAVIS_TAG $BUILD_REPO_URL electrum-dash
+    BUILD_REPO_URL=https://github.com/firstcryptoman/electrum-firo.git
+    git clone --branch $TRAVIS_TAG $BUILD_REPO_URL electrum-firo
     PIP_CMD="sudo python3 -m pip"
 else
-    git clone .. electrum-dash
+    git clone .. electrum-firo
     python3 -m virtualenv env
     source env/bin/activate
     PIP_CMD="pip"
 fi
-cd electrum-dash
+cd electrum-firo
 
 
 $PIP_CMD install --no-dependencies --no-warn-script-location -I \
@@ -45,7 +45,7 @@ cp contrib/dash/pyi_tctl_runtimehook.py .
 
 pyinstaller --clean \
     -y \
-    --name electrum-dash-$DASH_ELECTRUM_VERSION.bin \
+    --name electrum-firo-$DASH_ELECTRUM_VERSION.bin \
     osx.spec
 
 sudo hdiutil create -fs HFS+ -volname "Firo Electrum" \

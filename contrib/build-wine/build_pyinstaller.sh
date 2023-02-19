@@ -2,9 +2,9 @@
 
 set -ev
 
-export PYINSTALLER_REPO="https://github.com/SomberNight/pyinstaller.git"
-export PYINSTALLER_COMMIT="80ee4d613ecf75a1226b960a560ee01459e65ddb"
-# ^ tag 4.2, plus a custom commit that fixes cross-compilation with MinGW
+export PYINSTALLER_REPO="https://github.com/pyinstaller/pyinstaller.git"
+export PYINSTALLER_COMMIT="669313ba4c5c1403ebeb335c35cb68c8c6ba5dd4"
+# ^ tag 4.10
 
 if [ "$WINEARCH" = "win32" ] ; then
     export PYINST_ARCH="32bit"

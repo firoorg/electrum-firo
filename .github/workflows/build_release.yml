@@ -1,10 +1,21 @@
 name: Build release workflow
 
 on:
-  push:
-    tags:
-    - '*'
-
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name'
+        required: true
+        type: string
+      target_os:
+          description: 'Target OS for build'
+          required: true
+          type: choice
+          options:
+            - all
+            - windows_linux
+            - osx
+            - android
 jobs:
 
   create_release:
@@ -17,11 +28,11 @@ jobs:
     steps:
       - name: Try to Get Release
         id: get_release
-        uses: zebra-lucky/actions-js-getRelease@0.0.3
+        uses: firstcryptoman/actions-js-getRelease@0.0.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag: ${{ github.ref }}
+          tag: ${{ inputs.tag }}
       - name: Create Release
         id: create_release
         if: ${{ !steps.get_release.outputs.upload_url }}
@@ -29,14 +40,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref }}
-          release_name: ${{ github.ref }}
+          tag_name: ${{ inputs.tag }}
+          release_name: ${{ inputs.tag }}
           draft: false
           prerelease: false
 
   build_osx:
     needs: create_release
     runs-on: macos-10.15
+    if: ${{ inputs.target_os == 'all' || inputs.target_os == 'osx' }}
     name: create release for macOS
     steps:
       - name: Checkout
@@ -45,7 +57,7 @@ jobs:
         id: set_vars
         run: |
           source ./contrib/dash/travis/electrum_dash_version_env.sh
-          echo "::set-output name=pkg_ver::$(echo $DASH_ELECTRUM_VERSION)"
+          echo "pkg_ver=$(echo $DASH_ELECTRUM_VERSION)" >> $GITHUB_OUTPUT
       - name: Prepare build
         env:
           DASH_ELECTRUM_VERSION: ${{ steps.set_vars.outputs.pkg_ver }}
@@ -57,23 +69,24 @@ jobs:
         run: |
           ./contrib/dash/actions/script-osx.sh
       - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
+        uses: firstcryptoman/upload-release-asset@v1.0.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create_release.outputs.upload_url }}
-          asset_path: dist/Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-macosx.dmg
-          asset_name: Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-macosx.dmg
+          asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-macosx.dmg
+          asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-macosx.dmg
           asset_content_type: application/apple-diskimage
 
   build_apk:
     needs: create_release
     runs-on: ubuntu-18.04
+    if: ${{ inputs.target_os == 'all' || inputs.target_os == 'android' }}
     strategy:
       matrix:
         arch: ['armeabi-v7a', 'arm64-v8a']
-        is_mainnet: [['true', 'Electrum_DASH'],
-                     ['false', 'Electrum_DASH_Testnet']]
+        is_mainnet: [['true', 'Electrum_FIRO'],
+                     ['false', 'Electrum_FIRO_Testnet']]
     env:
       APP_ANDROID_ARCH: ${{ matrix.arch }}
       ELECTRUM_MAINNET: ${{ matrix.is_mainnet[0] }}
@@ -89,10 +102,10 @@ jobs:
         id: set_vars
         run: |
           source ./contrib/dash/travis/electrum_dash_version_env.sh
-          echo "::set-output name=pkg_ver::$(echo $DASH_ELECTRUM_VERSION)"
-          echo "::set-output name=apk_ver::$(echo $DASH_ELECTRUM_APK_VERSION)"
-          echo "::set-output name=vercode::$(echo $DASH_ELECTRUM_VERSION_CODE)"
-          echo "::set-output name=is_release::$(echo $IS_RELEASE)"
+          echo "pkg_ver=$(echo $DASH_ELECTRUM_VERSION)" >> $GITHUB_OUTPUT
+          echo "apk_ver=$(echo $DASH_ELECTRUM_APK_VERSION)" >> $GITHUB_OUTPUT
+          echo "vercode=$(echo $DASH_ELECTRUM_VERSION_CODE)" >> $GITHUB_OUTPUT
+          echo "is_release=$(echo $IS_RELEASE)" >> $GITHUB_OUTPUT
       - name: Prepare build
         if: ${{ steps.set_vars.outputs.is_release || matrix.is_mainnet[0] == 'false' }}
         env:
@@ -113,7 +126,7 @@ jobs:
           ./contrib/dash/actions/script-linux-apk.sh
       - name: Upload Release Asset
         if: ${{ steps.set_vars.outputs.is_release || matrix.is_mainnet[0] == 'false' }}
-        uses: actions/upload-release-asset@v1
+        uses: firstcryptoman/upload-release-asset@v1.0.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -125,6 +138,7 @@ jobs:
   build_linux_win:
     needs: create_release
     runs-on: ubuntu-18.04
+    if: ${{ inputs.target_os == 'all' || inputs.target_os == 'windows_linux' }}
     name: create release for Linux/Win
     steps:
       - name: Checkout
@@ -150,8 +164,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create_release.outputs.upload_url }}
-          asset_path: dist/Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.tar.gz
-          asset_name: Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.tar.gz
+          asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.tar.gz
+          asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.tar.gz
           asset_content_type: application/gzip
       - name: Upload sdist zip Release Asset
         uses: actions/upload-release-asset@v1
@@ -159,8 +173,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create_release.outputs.upload_url }}
-          asset_path: dist/Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.zip
-          asset_name: Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.zip
+          asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.zip
+          asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.zip
           asset_content_type: application/x-zip-compressed
       - name: Upload AppImage Release Asset
         uses: actions/upload-release-asset@v1
@@ -168,8 +182,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create_release.outputs.upload_url }}
-          asset_path: dist/Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-x86_64.AppImage
-          asset_name: Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-x86_64.AppImage
+          asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-x86_64.AppImage
+          asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-x86_64.AppImage
           asset_content_type: application/octet-stream
       - name: Upload Win32 Release Asset
         uses: actions/upload-release-asset@v1
@@ -177,8 +191,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create_release.outputs.upload_url }}
-          asset_path: dist/Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win32.exe
-          asset_name: Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win32.exe
+          asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win32.exe
+          asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win32.exe
           asset_content_type: application/vnd.microsoft.portable-executable
       - name: Upload Win64 Release Asset
         uses: actions/upload-release-asset@v1
@@ -186,16 +200,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create_release.outputs.upload_url }}
-          asset_path: dist/Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win64.exe
-          asset_name: Dash-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win64.exe
+          asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win64.exe
+          asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win64.exe
           asset_content_type: application/vnd.microsoft.portable-executable
 
-  upload_notify_artifact:
-    runs-on: ubuntu-18.04
-    if: always()
-    name: Upload Notify Artifact
-    steps:
-      - name: Upload Notify Artifact
-        uses: zebra-lucky/actions-js-slackJobsStatus@0.0.2
-        with:
-          gh_ctx: ${{ toJson(github) }}
+#  upload_notify_artifact:
+#    runs-on: ubuntu-18.04
+#    if: always()
+#    name: Upload Notify Artifact
+#    steps:
+#      - name: Upload Notify Artifact
+#        uses: zebra-lucky/actions-js-slackJobsStatus@0.0.2
+#        with:
+#          gh_ctx: ${{ toJson(github) }}
