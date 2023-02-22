@@ -1,5 +1,5 @@
 FROM ubuntu:20.04
-LABEL maintainer "Andriy Khavryuchenko <akhavr@khavr.com>"
+LABEL description="Building Electrum Firo sdist for Linux"
 
 ENV LANG="en_US.UTF-8" \
     LANGUAGE="en_US.UTF-8" \

@@ -1,5 +1,5 @@
 FROM ubuntu:18.04
-LABEL maintainer "Andriy Khavryuchenko <akhavr@khavr.com>"
+LABEL description="Building Electrum Firo executables for Windows"
 
 ENV LC_ALL=C.UTF-8 LANG=C.UTF-8
 
@@ -17,23 +17,15 @@ RUN dpkg --add-architecture i386 \
         build-essential libtool autoconf automake \
         gnupg2 \
         dirmngr \
+        gettext \
+        locales \
         python3-software-properties \
         software-properties-common \
-    && wget -nc https://dl.winehq.org/wine-builds/Release.key \
-    && echo "${WKEY_SHA1} Release.key" | sha256sum -c - \
-    && apt-key add Release.key && rm Release.key \
-    && wget -nc https://dl.winehq.org/wine-builds/winehq.key \
-    && echo "${WKEY_SHA2} winehq.key" | sha256sum -c - \
-    && apt-key add winehq.key && rm winehq.key \
-    && apt-add-repository -y https://dl.winehq.org/wine-builds/ubuntu/ \
-    && apt-add-repository -y ppa:zebra-lucky/ed-bdeps \
+    && wget -qO - https://dl.winehq.org/wine-builds/winehq.key | apt-key add - \
+    && apt-add-repository 'deb https://dl.winehq.org/wine-builds/ubuntu/ bionic main' \
     && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        wine-stable-amd64:amd64=6.0.0~bionic-1 \
-        wine-stable-i386:i386=6.0.0~bionic-1 \
-        wine-stable:amd64=6.0.0~bionic-1 \
-        winehq-stable:amd64=6.0.0~bionic-1 \
-        cabextract xauth xvfb ca-certificates zip unzip p7zip-full \
+    && apt-get install -y wine-stable=8.0.0.0~bionic-1 \
+        cabextract xauth xvfb ca-certificates zip unzip p7zip-full  \
     && wget https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks \
     && chmod +x winetricks && mv winetricks /usr/local/bin \
     && rm -rf /var/lib/apt/lists/*
@@ -57,6 +49,8 @@ ENV LIBUSB_SHA 620cec4dbe4868202949294157da5adb75c9fbb4f04266146fc833eef85f90fb
 ENV NSIS_FILE nsis-3.05-setup.exe
 ENV NSIS_PATH https://downloads.sourceforge.net/project/nsis/NSIS%203/3.05/
 ENV NSIS_SHA 1a3cc9401667547b9b9327a177b13485f7c59c2303d4b6183e7bc9e6c8d6bfdb
+
+ENV PATH=$PATH:/opt/wine-stable/bin
 
 RUN echo 'download and install 32-bit Python/git/NSIS' \
     && wineboot -i \

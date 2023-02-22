@@ -13,13 +13,14 @@ on:
           type: choice
           options:
             - all
-            - windows_linux
+            - linux
+            - windows
             - osx
             - android
 jobs:
 
   create_release:
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-22.04
     name: Create github release
     outputs:
       upload_url: >
@@ -47,7 +48,7 @@ jobs:
 
   build_osx:
     needs: create_release
-    runs-on: macos-10.15
+    runs-on: macos-11
     if: ${{ inputs.target_os == 'all' || inputs.target_os == 'osx' }}
     name: create release for macOS
     steps:
@@ -69,18 +70,17 @@ jobs:
         run: |
           ./contrib/dash/actions/script-osx.sh
       - name: Upload Release Asset
-        uses: firstcryptoman/upload-release-asset@v1.0.5
+        uses: firstcryptoman/upload-release-asset@v1.0.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          tag: ${{ inputs.tag }}
           asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-macosx.dmg
           asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-macosx.dmg
-          asset_content_type: application/apple-diskimage
 
   build_apk:
     needs: create_release
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-22.04
     if: ${{ inputs.target_os == 'all' || inputs.target_os == 'android' }}
     strategy:
       matrix:
@@ -126,20 +126,19 @@ jobs:
           ./contrib/dash/actions/script-linux-apk.sh
       - name: Upload Release Asset
         if: ${{ steps.set_vars.outputs.is_release || matrix.is_mainnet[0] == 'false' }}
-        uses: firstcryptoman/upload-release-asset@v1.0.5
+        uses: firstcryptoman/upload-release-asset@v1.0.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          tag: ${{ inputs.tag }}
           asset_path: dist/${{ matrix.is_mainnet[1] }}-${{ steps.set_vars.outputs.apk_ver }}-${{ matrix.arch }}-release-unsigned.apk
           asset_name: ${{ matrix.is_mainnet[1] }}-${{ steps.set_vars.outputs.apk_ver }}-${{ matrix.arch }}-release-unsigned.apk
-          asset_content_type: application/vnd.android.package-archive
 
-  build_linux_win:
+  build_linux:
     needs: create_release
-    runs-on: ubuntu-18.04
-    if: ${{ inputs.target_os == 'all' || inputs.target_os == 'windows_linux' }}
-    name: create release for Linux/Win
+    runs-on: ubuntu-22.04
+    if: ${{ inputs.target_os == 'all' || inputs.target_os == 'linux' }}
+    name: create release for Linux
     steps:
       - name: Checkout
         uses: actions/checkout@v1
@@ -147,62 +146,89 @@ jobs:
         id: set_vars
         run: |
           source ./contrib/dash/travis/electrum_dash_version_env.sh
-          echo "::set-output name=pkg_ver::$(echo $DASH_ELECTRUM_VERSION)"
+          echo "pkg_ver=$(echo $DASH_ELECTRUM_VERSION)" >> $GITHUB_OUTPUT
       - name: Prepare build
         env:
           DASH_ELECTRUM_VERSION: ${{ steps.set_vars.outputs.pkg_ver }}
         run: |
           ./contrib/dash/actions/install-linux.sh
-      - name: Build Linux/Win
+      - name: Build Linux
         env:
           DASH_ELECTRUM_VERSION: ${{ steps.set_vars.outputs.pkg_ver }}
         run: |
           ./contrib/dash/actions/script-linux.sh
       - name: Upload sdist tar.gz Release Asset
-        uses: actions/upload-release-asset@v1
+        uses: firstcryptoman/upload-release-asset@v1.0.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          tag: ${{ inputs.tag }}
           asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.tar.gz
           asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.tar.gz
-          asset_content_type: application/gzip
       - name: Upload sdist zip Release Asset
-        uses: actions/upload-release-asset@v1
+        uses: firstcryptoman/upload-release-asset@v1.0.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          tag: ${{ inputs.tag }}
           asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.zip
           asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.zip
-          asset_content_type: application/x-zip-compressed
       - name: Upload AppImage Release Asset
-        uses: actions/upload-release-asset@v1
+        uses: firstcryptoman/upload-release-asset@v1.0.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          tag: ${{ inputs.tag }}
           asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-x86_64.AppImage
           asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-x86_64.AppImage
-          asset_content_type: application/octet-stream
-      - name: Upload Win32 Release Asset
-        uses: actions/upload-release-asset@v1
+
+  build_windows:
+    needs: create_release
+    runs-on: ubuntu-22.04
+    if: ${{ inputs.target_os == 'all' || inputs.target_os == 'windows' }}
+    name: create release for Windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+      - name: Set outputs for pkg_ver
+        id: set_vars
+        run: |
+          source ./contrib/dash/travis/electrum_dash_version_env.sh
+          echo "pkg_ver=$(echo $DASH_ELECTRUM_VERSION)" >> $GITHUB_OUTPUT
+      - name: Prepare build
+        env:
+          DASH_ELECTRUM_VERSION: ${{ steps.set_vars.outputs.pkg_ver }}
+        run: |
+          ./contrib/dash/actions/install-wine.sh
+      - name: Build Windows
+        env:
+          DASH_ELECTRUM_VERSION: ${{ steps.set_vars.outputs.pkg_ver }}
+        run: |
+          ./contrib/dash/actions/script-wine.sh
+      - name: Upload Windows portable Release Asset
+        uses: firstcryptoman/upload-release-asset@v1.0.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          tag: ${{ inputs.tag }}
+          asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-portable.exe
+          asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-portable.exe
+      - name: Upload Win32 Release Asset
+        uses: firstcryptoman/upload-release-asset@v1.0.7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag: ${{ inputs.tag }}
           asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win32.exe
           asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win32.exe
-          asset_content_type: application/vnd.microsoft.portable-executable
       - name: Upload Win64 Release Asset
-        uses: actions/upload-release-asset@v1
+        uses: firstcryptoman/upload-release-asset@v1.0.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          tag: ${{ inputs.tag }}
           asset_path: dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win64.exe
           asset_name: Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win64.exe
-          asset_content_type: application/vnd.microsoft.portable-executable
 
 #  upload_notify_artifact:
 #    runs-on: ubuntu-18.04

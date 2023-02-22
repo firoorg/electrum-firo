@@ -3,6 +3,8 @@
 source ./contrib/dash/travis/electrum_dash_version_env.sh;
 echo wine build version is $DASH_ELECTRUM_VERSION
 
+./contrib/make_locale
+
 export ELECTRUM_COMMIT_HASH=$(git rev-parse HEAD)
 if [ "$WINEARCH" = "win32" ] ; then
     export GCC_TRIPLET_HOST="i686-w64-mingw32"

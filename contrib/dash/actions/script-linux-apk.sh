@@ -1,6 +1,8 @@
 #!/bin/bash
 set -ev
 
+source contrib/android/docker_env.sh
+
 ./contrib/make_locale
 find . -name '*.po' -delete
 find . -name '*.pot' -delete
@@ -38,5 +40,5 @@ docker run --rm \
     --env APP_ANDROID_ARCH=$APP_ANDROID_ARCH \
     --env APK_VERSION_CODE=$DASH_ELECTRUM_VERSION_CODE \
     -v $(pwd):/home/buildozer/build \
-    -t zebralucky/electrum-dash-winebuild:Kivy40x bash -c \
+    -t $DOCKER_IMG_BUILD_ANDROID bash -c \
     "$DOCKER_CMD"
