@@ -163,6 +163,14 @@ class ExchangeBase(Logger):
         return sorted([str(a) for (a, b) in rates.items() if b is not None and len(a)==3])
 
 
+class BitcoinAverage(ExchangeBase):
+
+    async def get_rates(self, ccy):
+        json = await self.get_json('apiv2.bitcoinaverage.com', '/indices/global/ticker/short')
+        return dict([(r.replace("BTC", ""), Decimal(json[r]['last']))
+                     for r in json if r != 'timestamp'])
+
+
 class Poloniex(ExchangeBase):
     async def get_rates(self, ccy):
         json = await self.get_json('poloniex.com', '/public?command=returnTicker')
