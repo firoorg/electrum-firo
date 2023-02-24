@@ -8,7 +8,7 @@ fi
 
 cd build
 if [[ -n $TRAVIS_TAG ]]; then
-    BUILD_REPO_URL=https://github.com/firstcryptoman/electrum-firo.git
+    BUILD_REPO_URL=https://github.com/firoorg/electrum-firo.git
     git clone --branch $TRAVIS_TAG $BUILD_REPO_URL electrum-firo
 else
     git clone .. electrum-firo
