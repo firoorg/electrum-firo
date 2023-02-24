@@ -65,7 +65,7 @@ break_legacy_easy_install
 
 
 info "Installing build dependencies."
-"$python" -m pip install --no-dependencies --no-warn-script-location \
+"$python" -m pip install --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-build-appimage.txt"
 
 info "installing electrum and its dependencies."
@@ -75,11 +75,11 @@ info "installing electrum and its dependencies."
 #       - cryptography, as building it would need openssl 1.1, not available on ubuntu 16.04
 "$python" -m pip install --no-dependencies --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements.txt"
-"$python" -m pip install --no-dependencies --no-warn-script-location \
+"$python" -m pip install --no-dependencies --no-binary :all: --only-binary PyQt5,PyQt5-Qt5,cryptography --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-binaries.txt"
-"$python" -m pip install --no-dependencies --no-warn-script-location \
+"$python" -m pip install --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-hw.txt"
-"$python" -m pip install --no-dependencies --no-warn-script-location \
+"$python" -m pip install --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" x11_hash==1.4
 
 "$python" -m pip install --no-dependencies --no-warn-script-location \
