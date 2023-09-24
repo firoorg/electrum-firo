@@ -315,7 +315,7 @@ class AddressSynchronizer(Logger):
             # being is_mine, as we roll the gap_limit forward
 
             # prevent lelantus transasctions stored as cb.
-            is_coinbase = tx.inputs()[0].is_coinbase_input() and not tx.inputs()[0].is_lelantus_input()
+            is_coinbase = tx.inputs()[0].is_coinbase_input() and not (tx.inputs()[0].is_lelantus_input() or tx.inputs()[0].is_spark_input())
             tx_height = self.get_tx_height(tx_hash).height
             if not allow_unrelated:
                 # note that during sync, if the transactions are not properly sorted,

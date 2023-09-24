@@ -696,6 +696,26 @@ class FiroLelantusJsplitTx(ProTxBase):
         vds.read_cursor = len(vds.input)
         return tx
 
+class FiroSparkSpend(ProTxBase):
+    __slots__ = ('sparkData').split()
+
+    def __str__(self):
+        res = ('sparkData: %s\n'
+               % (self.sparkData))
+        return res
+
+    def serialize(self):
+        res = (
+            self.sparkData
+        )
+        return res
+
+    @classmethod
+    def read_vds(cls, vds):
+        tx = FiroSparkSpend(vds.input[vds.read_cursor:])
+        vds.read_cursor = len(vds.input)
+        return tx
+
 class DashSubTxRegister(ProTxBase):
     '''Class representing DIP5 SubTxRegister'''
 
@@ -856,6 +876,7 @@ SPEC_PRO_UP_REG_TX = 3
 SPEC_PRO_UP_REV_TX = 4
 SPEC_CB_TX = 5
 LELANTUS_JSPLIT = 8
+SPARK_SPEND = 9
 
 
 SPEC_TX_HANDLERS = {
@@ -865,6 +886,7 @@ SPEC_TX_HANDLERS = {
     SPEC_PRO_UP_REV_TX: DashProUpRevTx,
     SPEC_CB_TX: DashCbTx,
     LELANTUS_JSPLIT: FiroLelantusJsplitTx,
+    SPARK_SPEND: FiroSparkSpend,
 }
 
 
@@ -888,7 +910,8 @@ SPEC_TX_NAMES = {
     SPEC_PRO_UP_REG_TX: 'ProUpRegTx',
     SPEC_PRO_UP_REV_TX: 'ProUpRevTx',
     SPEC_CB_TX: 'CbTx',
-    LELANTUS_JSPLIT: 'LelantusJsplit'
+    LELANTUS_JSPLIT: 'LelantusJsplit',
+    SPARK_SPEND: 'SparkSpend'
 }
 
 

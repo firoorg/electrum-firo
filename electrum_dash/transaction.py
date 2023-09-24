@@ -209,6 +209,9 @@ class TxInput:
         return self.script_sig and \
                (self.script_sig[0] == 0xC7 or self.script_sig[0] == 0xC9)
 
+    def is_spark_input(self) -> bool:
+        return self.script_sig and self.script_sig[0] == 0xd3
+
     def is_coinbase_input(self) -> bool:
         """Whether this is the input of a coinbase tx."""
         return self.prevout.is_coinbase()
