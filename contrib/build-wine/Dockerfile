@@ -24,7 +24,10 @@ RUN dpkg --add-architecture i386 \
     && wget -qO - https://dl.winehq.org/wine-builds/winehq.key | apt-key add - \
     && apt-add-repository 'deb https://dl.winehq.org/wine-builds/ubuntu/ bionic main' \
     && apt-get update \
-    && apt-get install -y wine-stable=8.0.0.0~bionic-1 \
+    && apt-get install -y \
+        wine-stable=8.0.1~bionic-1 \
+        wine-stable-i386e=8.0.1~bionic-1 \
+        wine-stable-amd64e=8.0.1~bionic-1 \
         cabextract xauth xvfb ca-certificates zip unzip p7zip-full  \
     && wget https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks \
     && chmod +x winetricks && mv winetricks /usr/local/bin \
