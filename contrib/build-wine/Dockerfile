@@ -26,8 +26,8 @@ RUN dpkg --add-architecture i386 \
     && apt-get update \
     && apt-get install -y \
         wine-stable=8.0.1~bionic-1 \
-        wine-stable-i386e=8.0.1~bionic-1 \
-        wine-stable-amd64e=8.0.1~bionic-1 \
+        wine-stable-i386=8.0.1~bionic-1 \
+        wine-stable-amd64=8.0.1~bionic-1 \
         cabextract xauth xvfb ca-certificates zip unzip p7zip-full  \
     && wget https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks \
     && chmod +x winetricks && mv winetricks /usr/local/bin \
