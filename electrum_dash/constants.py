@@ -76,6 +76,7 @@ class AbstractNet:
     ADDRTYPE_P2SH: int
     GENESIS: str
     BIP44_COIN_TYPE: int
+    ADDRTYPE_EXP2PKH: int
 
     @classmethod
     def max_checkpoint(cls) -> int:
@@ -92,6 +93,7 @@ class BitcoinMainnet(AbstractNet):
     TESTNET = False
     WIF_PREFIX = 210
     ADDRTYPE_P2PKH = 82  # 0x52
+    ADDRTYPE_EXP2PKH = 185 # 0xb9
     ADDRTYPE_P2SH = 7  # 0x07
     SEGWIT_HRP = "xzc"
     GENESIS = "4381deb85b1b2c9843c222944b616d997516dcbd6a964e1eaf0def0830695233"
@@ -129,6 +131,7 @@ class BitcoinTestnet(AbstractNet):
     TESTNET = True
     WIF_PREFIX = 185
     ADDRTYPE_P2PKH = 65
+    ADDRTYPE_EXP2PKH = 185 # 0xb9
     ADDRTYPE_P2SH = 178
     SEGWIT_HRP = "txzc"
     GENESIS = "aa22adcc12becaf436027ffe62a8fb21b234c58c23865291e5dc52cf53f64fca"
@@ -166,6 +169,7 @@ class BitcoinRegtest(AbstractNet):
     TESTNET = False
     WIF_PREFIX = 239
     ADDRTYPE_P2PKH = 65
+    ADDRTYPE_EXP2PKH = 185 # 0xb9
     ADDRTYPE_P2SH = 178
     SEGWIT_HRP = "txzc" 
     GENESIS = "a42b98f04cc2916e8adfb5d9db8a2227c4629bc205748ed2f33180b636ee885b"

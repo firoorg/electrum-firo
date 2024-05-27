@@ -192,6 +192,8 @@ class opcodes(IntEnum):
 
     OP_INVALIDOPCODE = 0xff
 
+    OP_EXCHANGEADDR = 0xe0
+
     def hex(self) -> str:
         return bytes([self]).hex()
 
@@ -358,14 +360,21 @@ def hash160_to_b58_address(h160: bytes, addrtype: int) -> str:
 def b58_address_to_hash160(addr: str) -> Tuple[int, bytes]:
     addr = to_bytes(addr, 'ascii')
     _bytes = DecodeBase58Check(addr)
-    if len(_bytes) != 21:
+    if len(_bytes) != 21 and len(_bytes) != 23:
         raise Exception(f'expected 21 payload bytes in base58 address. got: {len(_bytes)}')
-    return _bytes[0], _bytes[1:21]
-
+    if len(_bytes) == 21
+        return _bytes[0], _bytes[1:21]
+    elif len(_bytes) == 23
+        return _bytes[0], _bytes[3:23]
+    return None
 
 def hash160_to_p2pkh(h160: bytes, *, net=None) -> str:
     if net is None: net = constants.net
     return hash160_to_b58_address(h160, net.ADDRTYPE_P2PKH)
+
+def hash160_to_exp2pkh(h160: bytes, *, net=None) -> str:
+    if net is None: net = constants.net
+    return hash160_to_b58_address(h160, net.ADDRTYPE_EXP2PKH)
 
 def hash160_to_p2sh(h160: bytes, *, net=None) -> str:
     if net is None: net = constants.net
@@ -375,10 +384,16 @@ def public_key_to_p2pkh(public_key: bytes, *, net=None) -> str:
     if net is None: net = constants.net
     return hash160_to_p2pkh(hash_160(public_key), net=net)
 
+def public_key_to_exp2pkh(public_key: bytes, *, net=None) -> str:
+    if net is None: net = constants.net
+    return hash160_to_exp2pkh(hash_160(public_key), net=net)
+
 def pubkey_to_address(txin_type: str, pubkey: str, *, net=None) -> str:
     if net is None: net = constants.net
     if txin_type == 'p2pkh':
         return public_key_to_p2pkh(bfh(pubkey), net=net)
+    elif txin_type == 'exp2pkh':
+        return public_key_to_exp2pkh(bfh(pubkey), net=net)
     else:
         raise NotImplementedError(txin_type)
 
@@ -405,6 +420,8 @@ def address_to_script(addr: str, *, net=None) -> str:
     addrtype, hash_160_ = b58_address_to_hash160(addr)
     if addrtype == net.ADDRTYPE_P2PKH:
         script = pubkeyhash_to_p2pkh_script(bh2u(hash_160_))
+    elif addrtype == net.ADDRTYPE_EXP2PKH:
+        script = pubkeyhash_to_exp2pkh_script(bh2u(hash_160_))
     elif addrtype == net.ADDRTYPE_P2SH:
         script = construct_script([opcodes.OP_HASH160, hash_160_, opcodes.OP_EQUAL])
     else:
@@ -417,6 +434,7 @@ class OnchainOutputType(Enum):
     In case of p2sh, p2wsh and similar, no knowledge of redeem script, etc.
     """
     P2PKH = enum.auto()
+    EXP2PKH = enum.auto()
     P2SH = enum.auto()
 
 
@@ -428,6 +446,8 @@ def address_to_hash(addr: str, *, net=None) -> Tuple[OnchainOutputType, bytes]:
     addrtype, hash_160_ = b58_address_to_hash160(addr)
     if addrtype == net.ADDRTYPE_P2PKH:
         return OnchainOutputType.P2PKH, hash_160_
+    elif addrtype == net.ADDRTYPE_EXP2PKH:
+        return OnchainOutputType.EXP2PKH, hash_160_
     elif addrtype == net.ADDRTYPE_P2SH:
         return OnchainOutputType.P2SH, hash_160_
     raise BitcoinException(f"unknown address type: {addrtype}")
@@ -454,6 +474,15 @@ def pubkeyhash_to_p2pkh_script(pubkey_hash160: str) -> str:
         opcodes.OP_CHECKSIG
     ])
 
+def pubkeyhash_to_exp2pkh_script(pubkey_hash160: str) -> str:
+    return construct_script([
+        opcodes.OP_EXCHANGEADDR,
+        opcodes.OP_DUP,
+        opcodes.OP_HASH160,
+        pubkey_hash160,
+        opcodes.OP_EQUALVERIFY,
+        opcodes.OP_CHECKSIG
+    ])
 
 __b58chars = b'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 assert len(__b58chars) == 58
@@ -641,7 +670,7 @@ def is_b58_address(addr: str, *, net=None) -> bool:
         addrtype, h = b58_address_to_hash160(addr)
     except Exception as e:
         return False
-    if addrtype not in [net.ADDRTYPE_P2PKH, net.ADDRTYPE_P2SH]:
+    if addrtype not in [net.ADDRTYPE_P2PKH, net.ADDRTYPE_P2SH, net.ADDRTYPE_EXP2PKH]:
         return False
     return True
 

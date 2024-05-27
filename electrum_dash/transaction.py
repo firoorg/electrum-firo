@@ -44,7 +44,7 @@ from . import ecc, bitcoin, constants, bip32
 from .bip32 import BIP32Node
 from .util import profiler, to_bytes, bh2u, bfh, chunks, is_hex_str
 from .bitcoin import (TYPE_ADDRESS, TYPE_SCRIPT, hash_160,
-                      hash160_to_p2sh, hash160_to_p2pkh,
+                      hash160_to_p2sh, hash160_to_p2pkh, hash160_to_exp2pkh,
                       var_int, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN,
                       int_to_hex, push_script, b58_address_to_hash160,
                       opcodes, add_number_to_script, base_decode, base_encode,
@@ -421,6 +421,9 @@ OPPushDataPubkey = OPPushDataGeneric(lambda x: x in (33, 65))
 SCRIPTPUBKEY_TEMPLATE_P2PKH = [opcodes.OP_DUP, opcodes.OP_HASH160,
                                OPPushDataGeneric(lambda x: x == 20),
                                opcodes.OP_EQUALVERIFY, opcodes.OP_CHECKSIG]
+SCRIPTPUBKEY_TEMPLATE_EXP2PKH = [opcodes.OP_EXCHANGEADDR, opcodes.OP_DUP, opcodes.OP_HASH160,
+                               OPPushDataGeneric(lambda x: x == 20),
+                               opcodes.OP_EQUALVERIFY, opcodes.OP_CHECKSIG]
 SCRIPTPUBKEY_TEMPLATE_P2SH = [opcodes.OP_HASH160, OPPushDataGeneric(lambda x: x == 20), opcodes.OP_EQUAL]
 
 
@@ -454,6 +457,8 @@ def get_script_type_from_output_script(_bytes: bytes) -> Optional[str]:
         return None
     if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2PKH):
         return 'p2pkh'
+    if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_EXP2PKH):
+        return 'exp2pkh'
     if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2SH):
         return 'p2sh'
     return None
@@ -467,6 +472,10 @@ def get_address_from_output_script(_bytes: bytes, *, net=None) -> Optional[str]:
     # p2pkh
     if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2PKH):
         return hash160_to_p2pkh(decoded[2][1], net=net)
+
+    # exp2pkh
+    if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_EXP2PKH):
+        return hash160_to_exp2pkh(decoded[2][1], net=net)
 
     # p2sh
     if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2SH):
@@ -675,6 +684,8 @@ class Transaction:
         addrtype, hash_160_ = b58_address_to_hash160(addr)
         if addrtype == constants.net.ADDRTYPE_P2PKH:
             return 'p2pkh'
+        if addrtype == constants.net.ADDRTYPE_EXP2PKH:
+            return 'exp2pkh'
         elif addrtype == constants.net.ADDRTYPE_P2SH:
             return 'p2sh'
         raise Exception(f'unrecognized address: {repr(addr)}')
@@ -721,6 +732,10 @@ class Transaction:
             pubkey = pubkeys[0]
             pkh = bh2u(hash_160(bfh(pubkey)))
             return bitcoin.pubkeyhash_to_p2pkh_script(pkh)
+        elif txin.script_type in ['exp2pkh']:
+            pubkey = pubkeys[0]
+            pkh = bh2u(hash_160(bfh(pubkey)))
+            return bitcoin.pubkeyhash_to_exp2pkh_script(pkh)
         elif txin.script_type == 'p2pk':
             pubkey = pubkeys[0]
             return bitcoin.public_key_to_p2pk_script(pubkey)
@@ -1242,6 +1257,8 @@ class PartialTxInput(TxInput, PSBTSection):
                 type = inner_type + '-' + type
             if type in ('p2pkh', ):
                 self.script_type = type
+            if type in ('exp2pkh', ):
+                self.script_type = type
         return
 
     def is_complete(self) -> bool:
@@ -1256,7 +1273,7 @@ class PartialTxInput(TxInput, PSBTSection):
         #       that are related to the wallet.
         #       The 'fix' would be adding extra logic that matches on templates,
         #       and figures out the script_type from available fields.
-        if self.script_type in ('p2pk', 'p2pkh'):
+        if self.script_type in ('p2pk', 'p2pkh', "exp2pkh"):
             return s >= 1
         if self.script_type in ('p2sh', ):
             return s >= self.num_sig
