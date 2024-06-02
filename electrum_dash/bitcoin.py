@@ -362,9 +362,9 @@ def b58_address_to_hash160(addr: str) -> Tuple[int, bytes]:
     _bytes = DecodeBase58Check(addr)
     if len(_bytes) != 21 and len(_bytes) != 23:
         raise Exception(f'expected 21 payload bytes in base58 address. got: {len(_bytes)}')
-    if len(_bytes) == 21
+    if len(_bytes) == 21:
         return _bytes[0], _bytes[1:21]
-    elif len(_bytes) == 23
+    elif len(_bytes) == 23:
         return _bytes[0], _bytes[3:23]
     return None
 
