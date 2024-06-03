@@ -475,7 +475,7 @@ def get_address_from_output_script(_bytes: bytes, *, net=None) -> Optional[str]:
 
     # exp2pkh
     if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_EXP2PKH):
-        return hash160_to_exp2pkh(decoded[2][1], net=net)
+        return hash160_to_exp2pkh(decoded[3][1], net=net)
 
     # p2sh
     if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2SH):

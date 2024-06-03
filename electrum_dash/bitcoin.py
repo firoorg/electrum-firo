@@ -365,7 +365,7 @@ def b58_address_to_hash160(addr: str) -> Tuple[int, bytes]:
     if len(_bytes) == 21:
         return _bytes[0], _bytes[1:21]
     elif len(_bytes) == 23:
-        return _bytes[0], _bytes[3:23]
+        return _bytes[1], _bytes[3:23]
     return None
 
 def hash160_to_p2pkh(h160: bytes, *, net=None) -> str:
