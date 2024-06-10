@@ -42,12 +42,12 @@ import copy
 
 from . import ecc, bitcoin, constants, bip32
 from .bip32 import BIP32Node
-from .util import profiler, to_bytes, bh2u, bfh, chunks, is_hex_str
+from .util import to_bytes, bh2u, bfh, chunks, is_hex_str
 from .bitcoin import (TYPE_ADDRESS, TYPE_SCRIPT, hash_160,
                       hash160_to_p2sh, hash160_to_p2pkh, hash160_to_exp2pkh,
                       var_int, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN,
-                      int_to_hex, push_script, b58_address_to_hash160,
-                      opcodes, add_number_to_script, base_decode, base_encode,
+                      int_to_hex, b58_address_to_hash160,
+                      opcodes, base_decode, base_encode,
                       construct_script)
 from .crypto import sha256d
 from .dash_tx import (ProTxBase, read_extra_payload, serialize_extra_payload,
