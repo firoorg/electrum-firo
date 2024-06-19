@@ -155,7 +155,7 @@ class BitcoinTestnet(AbstractNet):
     XPUB_HEADERS_INV = inv_dict(XPUB_HEADERS)
     # DRKV_HEADER = 0x3a8061a0  # DRKV
     # DRKP_HEADER = 0x3a805837  # DRKP
-    BIP44_COIN_TYPE = 136
+    BIP44_COIN_TYPE = 1
     COIN = coins.FiroTestnet()
     DIP3_ACTIVATION_HEIGHT = 5000
 
