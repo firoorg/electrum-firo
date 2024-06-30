@@ -320,14 +320,14 @@ class TrezorPlugin(HW_PluginBase):
         return xpub
 
     def get_trezor_input_script_type(self, electrum_txin_type: str):
-        if electrum_txin_type in ('p2pkh',):
+        if electrum_txin_type in ('p2pkh', 'exp2pkh'):
             return InputScriptType.SPENDADDRESS
         if electrum_txin_type in ('p2sh',):
             return InputScriptType.SPENDMULTISIG
         raise ValueError('unexpected txin type: {}'.format(electrum_txin_type))
 
     def get_trezor_output_script_type(self, electrum_txin_type: str):
-        if electrum_txin_type in ('p2pkh',):
+        if electrum_txin_type in ('p2pkh', 'exp2pkh'):
             return OutputScriptType.PAYTOADDRESS
         if electrum_txin_type in ('p2sh',):
             return OutputScriptType.PAYTOMULTISIG
