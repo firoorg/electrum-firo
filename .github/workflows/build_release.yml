@@ -77,7 +77,7 @@ jobs:
             dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win32.exe
 
   build_osx:
-    runs-on: macos-11
+    runs-on: macos-12
     if: ${{ inputs.target_os == 'all' || inputs.target_os == 'osx' }}
     name: create release for macOS
     steps:
