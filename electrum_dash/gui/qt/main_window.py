@@ -273,6 +273,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         tabs.addTab(self.create_history_tab(), read_QIcon("tab_history.png"), _('History'))
         tabs.addTab(self.send_tab, read_QIcon("tab_send.png"), _('Send'))
         tabs.addTab(self.receive_tab, read_QIcon("tab_receive.png"), _('Receive'))
+        tabs.addTab(self.utxo_tab, read_QIcon("tab_coins.png"), _("Co&ins"))
         self.update_available_amount()
 
         def add_optional_tab(tabs, tab, icon, description, name):

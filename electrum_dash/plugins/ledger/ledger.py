@@ -137,20 +137,39 @@ class btchip_dash(btchip):
                 self.dongle.exchange(bytearray(apdu))
                 offset += dataLength
 
-        params = []
+        #Sending the lockTime and the extraPayload
+        blockLength = 255
+        buffer = []
         if transaction.extra_data:
-            if len(transaction.extra_data) > 255 - len(transaction.lockTime):
-                # for now the size should be sufficient
-                raise Exception('The size of the DIP2 extra data block has exceeded the limit.')
+            writeVarint(len(transaction.extra_data), buffer)
+        offset = blockLength - len(transaction.lockTime) - len(buffer)
 
-            writeVarint(len(transaction.extra_data), params)
-            params.extend(transaction.extra_data)
+        if transaction.extra_data:
+            apdu = [self.BTCHIP_CLA, self.BTCHIP_INS_GET_TRUSTED_INPUT, 0x80, 0x00, blockLength]
+        else:
+            apdu = [self.BTCHIP_CLA, self.BTCHIP_INS_GET_TRUSTED_INPUT, 0x80, 0x00, len(transaction.lockTime) + len(buffer)]
 
-        apdu = [self.BTCHIP_CLA, self.BTCHIP_INS_GET_TRUSTED_INPUT, 0x80, 0x00, len(transaction.lockTime) + len(params)]
-        # Locktime
         apdu.extend(transaction.lockTime)
-        apdu.extend(params)
+        apdu.extend(buffer)
+        if offset > len(transaction.extra_data):
+            offset = len(transaction.extra_data)
+
+        if transaction.extra_data:
+            apdu.extend(transaction.extra_data[0: offset])
         response = self.dongle.exchange(bytearray(apdu))
+
+        if transaction.extra_data:
+            while (offset < len(transaction.extra_data)):
+                blockLength = 255
+                if ((offset + blockLength) < len(transaction.extra_data)):
+                    dataLength = blockLength
+                else:
+                    dataLength = len(transaction.extra_data) - offset
+                apdu = [self.BTCHIP_CLA, self.BTCHIP_INS_GET_TRUSTED_INPUT, 0x80, 0x00, dataLength]
+                apdu.extend(transaction.extra_data[offset: offset + dataLength])
+                response = self.dongle.exchange(bytearray(apdu))
+                offset += dataLength
+
         result['trustedInput'] = True
         result['value'] = response
         return result
