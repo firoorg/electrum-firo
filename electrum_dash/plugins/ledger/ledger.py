@@ -139,10 +139,6 @@ class btchip_dash(btchip):
 
         params = []
         if transaction.extra_data:
-            if len(transaction.extra_data) > 255 - len(transaction.lockTime):
-                # for now the size should be sufficient
-                raise Exception('The size of the DIP2 extra data block has exceeded the limit.')
-
             writeVarint(len(transaction.extra_data), params)
             params.extend(transaction.extra_data)
 
