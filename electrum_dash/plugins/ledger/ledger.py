@@ -520,6 +520,8 @@ class Ledger_KeyStore(Hardware_KeyStore):
                         v, h = b58_address_to_hash160(output)
                         if v == constants.net.ADDRTYPE_P2PKH or v == constants.net.ADDRTYPE_EXP2PKH:
                             output = hash160_to_b58_address(h, 0)
+                        if v == constants.net.ADDRTYPE_EXP2PKH:
+                            output = hash160_to_b58_address(h, 185)
 
         self.handler.show_message(_("Confirm Transaction on your Ledger device..."))
         try:
