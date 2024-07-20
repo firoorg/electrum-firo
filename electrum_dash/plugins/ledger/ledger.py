@@ -140,11 +140,14 @@ class btchip_dash(btchip):
         #Sending the lockTime and the extraPayload
         blockLength = 255
         buffer = []
-        if transaction.extra_data:
-            writeVarint(len(transaction.extra_data), buffer)
+        is_coinbase_tx = len(transaction.inputs) == 1 and transaction.version == b'\x03\x00\x05\x00'
+        writeVarint(len(transaction.extra_data), buffer)
+
+        if transaction.extra_data and is_coinbase_tx:
+            buffer.extend(transaction.extra_data)
         offset = blockLength - len(transaction.lockTime) - len(buffer)
 
-        if transaction.extra_data:
+        if transaction.extra_data and not is_coinbase_tx:
             apdu = [self.BTCHIP_CLA, self.BTCHIP_INS_GET_TRUSTED_INPUT, 0x80, 0x00, blockLength]
         else:
             apdu = [self.BTCHIP_CLA, self.BTCHIP_INS_GET_TRUSTED_INPUT, 0x80, 0x00, len(transaction.lockTime) + len(buffer)]
@@ -154,11 +157,11 @@ class btchip_dash(btchip):
         if offset > len(transaction.extra_data):
             offset = len(transaction.extra_data)
 
-        if transaction.extra_data:
+        if transaction.extra_data and not is_coinbase_tx:
             apdu.extend(transaction.extra_data[0: offset])
         response = self.dongle.exchange(bytearray(apdu))
 
-        if transaction.extra_data:
+        if transaction.extra_data and not is_coinbase_tx:
             while (offset < len(transaction.extra_data)):
                 blockLength = 255
                 if ((offset + blockLength) < len(transaction.extra_data)):
