@@ -21,7 +21,7 @@ jobs:
     name: create release for Linux
     steps:
       - name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v4
       - name: Set outputs for pkg_ver
         id: set_vars
         run: |
@@ -39,8 +39,9 @@ jobs:
           ./contrib/dash/actions/script-linux.sh
       - name: Upload Artifact
         if: success()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
+          name: linux-bin
           path: |
             dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-x86_64.AppImage
             dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}.tar.gz
@@ -52,7 +53,7 @@ jobs:
     name: create release for Windows
     steps:
       - name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v4
       - name: Set outputs for pkg_ver
         id: set_vars
         run: |
@@ -70,8 +71,9 @@ jobs:
           ./contrib/dash/actions/script-wine.sh
       - name: Upload Artifact
         if: success()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
+          name: windows-bin
           path: |
             dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win64.exe
             dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win32.exe
@@ -82,7 +84,7 @@ jobs:
     name: create release for macOS
     steps:
       - name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v4
       - name: Set outputs for pkg_ver
         id: set_vars
         run: |
@@ -102,7 +104,8 @@ jobs:
           ./contrib/dash/actions/script-osx.sh
       - name: Upload Artifact
         if: success()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
+          name: macos-bin
           path: |
             dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-macosx.dmg
