@@ -69,6 +69,8 @@ jobs:
           DASH_ELECTRUM_VERSION: ${{ steps.set_vars.outputs.pkg_ver }}
         run: |
           ./contrib/dash/actions/script-wine.sh
+      - name: Rename portable bin
+        run: mv dist/portable-electrum-firo-${{ steps.set_vars.outputs.pkg_ver }}.exe dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-portable.exe
       - name: Upload Artifact
         if: success()
         uses: actions/upload-artifact@v4
@@ -77,6 +79,7 @@ jobs:
           path: |
             dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win64.exe
             dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-setup-win32.exe
+            dist/Firo-Electrum-${{ steps.set_vars.outputs.pkg_ver }}-portable.exe
 
   build_osx:
     runs-on: macos-12
