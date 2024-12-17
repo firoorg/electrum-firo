@@ -379,7 +379,7 @@ class TrezorPlugin(HW_PluginBase):
                 if txin.script_sig.startswith(b"\xc4") and txin.nsequence == 0xffffffff:
                     prev_index = 1
                 else:
-                    prev_index = txin.nsequence
+                    prev_index = txin.prevout.out_idx
             else:
                 if for_sig:
                     assert isinstance(tx, PartialTransaction)
