@@ -3,9 +3,11 @@ set -ev
 
 PYTHON_VERSION=$(python3 --version)
 echo "Using system Python: $PYTHON_VERSION"
+
 brew install gmp
 brew install gettext libtool automake pkg-config
 
+export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig"
 export CFLAGS="-I/opt/homebrew/include -I/usr/local/include $CFLAGS"
 export LDFLAGS="-L/opt/homebrew/lib -L/usr/local/lib $LDFLAGS"
 
