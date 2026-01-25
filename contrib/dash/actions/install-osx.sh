@@ -28,6 +28,7 @@ if [[ -n $GITHUB_REF ]]; then
     echo "Building ZBar dylib..."
     rm -f libzbar.0.dylib
     export MACOSX_DEPLOYMENT_TARGET=11.0
+    export LDFLAGS="$LDFLAGS -liconv"
     ./contrib/make_zbar.sh
     rm -rf contrib/zbar/
 fi
