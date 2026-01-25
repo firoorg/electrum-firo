@@ -6,6 +6,9 @@ echo "Using system Python: $PYTHON_VERSION"
 brew install gmp
 brew install gettext libtool automake pkg-config
 
+export CFLAGS="-I/opt/homebrew/include -I/usr/local/include $CFLAGS"
+export LDFLAGS="-L/opt/homebrew/lib -L/usr/local/lib $LDFLAGS"
+
 LIBUSB_VER=1.0.24
 LIBUSB_URI=https://github.com/libusb/libusb/releases/download
 LIBUSB_SHA=7efd2685f7b327326dcfb85cee426d9b871fd70e22caa15bb68d595ce2a2b12a
