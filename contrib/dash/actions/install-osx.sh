@@ -3,7 +3,7 @@ set -ev
 
 PYTHON_VERSION=$(python3 --version)
 echo "Using system Python: $PYTHON_VERSION"
-
+brew install gmp
 brew install gettext libtool automake pkg-config
 
 LIBUSB_VER=1.0.24
