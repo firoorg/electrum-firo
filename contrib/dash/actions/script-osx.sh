@@ -1,21 +1,13 @@
 #!/bin/bash
 set -ev
 
-export MACOSX_DEPLOYMENT_TARGET=10.13
+export MACOSX_DEPLOYMENT_TARGET=11.0
 
-export PY37BINDIR=/Library/Frameworks/Python.framework/Versions/3.7/bin/
-export PATH=$PATH:$PY37BINDIR
 echo osx build version is $DASH_ELECTRUM_VERSION
 
-
-if [[ -n $GITHUB_REF ]]; then
-    PIP_CMD="sudo python3 -m pip"
-else
-    python3 -m virtualenv env
-    source env/bin/activate
-    PIP_CMD="pip"
-fi
-
+python3 -m venv env
+source env/bin/activate
+PIP_CMD="pip"
 
 $PIP_CMD install --no-dependencies --no-warn-script-location -U \
     -r contrib/deterministic-build/requirements.txt
@@ -24,11 +16,10 @@ $PIP_CMD install --no-dependencies --no-warn-script-location -U \
 $PIP_CMD install --no-dependencies --no-warn-script-location -U \
     -r contrib/deterministic-build/requirements-binaries-mac.txt
 $PIP_CMD install --no-dependencies --no-warn-script-location -U x11_hash>=1.4
-
 $PIP_CMD install --no-dependencies --no-warn-script-location -U \
     -r contrib/deterministic-build/requirements-build-mac.txt
 
-export PATH="/usr/local/opt/gettext/bin:$PATH"
+export PATH="/opt/homebrew/bin:/usr/local/opt/gettext/bin:$PATH"
 ./contrib/make_locale
 find . -name '*.po' -delete
 find . -name '*.pot' -delete
@@ -44,4 +35,4 @@ pyinstaller --clean \
 
 sudo hdiutil create -fs HFS+ -volname "Firo Electrum" \
     -srcfolder dist/Firo\ Electrum.app \
-    dist/Firo-Electrum-$DASH_ELECTRUM_VERSION-macosx.dmg
+    dist/Firo-Electrum-$DASH_ELECTRUM_VERSION
