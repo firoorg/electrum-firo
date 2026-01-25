@@ -21,7 +21,7 @@ popd
 sudo rm -rf libusb-${LIBUSB_VER}*
 cp /opt/libusb/lib/libusb-1.*.dylib . || true
 
-brew install libsecp256k1
+brew install secp256k1
 cp /opt/homebrew/lib/libsecp256k1*.dylib . || true
 
 if [[ -n $GITHUB_REF ]]; then
