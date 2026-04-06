@@ -54,7 +54,8 @@ info "Building $pkgname..."
                 --with-directshow=yes \
                 --disable-dependency-tracking"
         elif [ $(uname) == "Darwin" ]; then
-            # macos target
+            # macos target (arm64 needs explicit -liconv for QR text / iconv symbols)
+            export LIBS="${LIBS:+$LIBS }-liconv"
             AUTOCONF_FLAGS="$AUTOCONF_FLAGS \
                 --with-x=no \
                 --enable-video=no \
