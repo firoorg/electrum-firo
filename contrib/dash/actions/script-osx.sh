@@ -28,7 +28,12 @@ $PIP_CMD install --no-dependencies --no-warn-script-location -U x11_hash>=1.4
 $PIP_CMD install --no-dependencies --no-warn-script-location -U \
     -r contrib/deterministic-build/requirements-build-mac.txt
 
-export PATH="/usr/local/opt/gettext/bin:$PATH"
+if command -v brew >/dev/null 2>&1; then
+  export PATH="$(brew --prefix gettext)/bin:$PATH"
+else
+  export PATH="/usr/local/opt/gettext/bin:$PATH"
+fi
+
 ./contrib/make_locale
 find . -name '*.po' -delete
 find . -name '*.pot' -delete
