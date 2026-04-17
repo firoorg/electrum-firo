@@ -41,7 +41,8 @@ from .ecc import string_to_number
 from .crypto import (pw_decode, pw_encode, sha256, sha256d, PW_HASH_VERSION_LATEST,
                      SUPPORTED_PW_HASH_VERSIONS, UnsupportedPasswordHashVersion, hash_160)
 from .util import (InvalidPassword, WalletFileException,
-                   BitcoinException, bh2u, bfh, inv_dict, is_hex_str)
+                   BitcoinException, UserFacingException,
+                   bh2u, bfh, inv_dict, is_hex_str)
 from .mnemonic import Mnemonic, Wordlist, seed_type, is_seed
 from .plugin import run_hook
 from .logging import Logger
@@ -867,8 +868,16 @@ class Hardware_KeyStore(Xpub, KeyStore):
     def opportunistically_fill_in_missing_info_from_device(self, client: 'HardwareClientBase'):
         assert client is not None
         if self._root_fingerprint is None:
-            self._root_fingerprint = client.request_root_fingerprint_from_device()
-            self.is_requesting_to_be_rewritten_to_wallet_file = True
+            try:
+                self._root_fingerprint = client.request_root_fingerprint_from_device()
+                self.is_requesting_to_be_rewritten_to_wallet_file = True
+            except UserFacingException as e:
+                self.logger.info(f"could not refresh root_fingerprint from device: {str(e)}")
+            except BaseException as e:
+                if getattr(e, "sw", None) in (0x6f00, 0x6d00, 0x6700):
+                    self.logger.info(f"could not refresh root_fingerprint from device (sw={hex(e.sw)})")
+                else:
+                    raise
         if self.label != client.label():
             self.label = client.label()
             self.is_requesting_to_be_rewritten_to_wallet_file = True

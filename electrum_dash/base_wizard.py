@@ -464,9 +464,18 @@ class BaseWizard(Logger):
             xpub = self.plugin.get_xpub(device_info.device.id_, derivation, xtype, self)
             client = devmgr.client_by_id(device_info.device.id_, scan_now=False)
             if not client: raise Exception("failed to find client for device id")
-            root_fingerprint = client.request_root_fingerprint_from_device()
             label = client.label()  # use this as device_info.label might be outdated!
             soft_device_id = client.get_soft_device_id()  # use this as device_info.device_id might be outdated!
+            root_fingerprint = None
+            try:
+                root_fingerprint = client.request_root_fingerprint_from_device()
+            except UserFacingException as e:
+                self.logger.info(f"could not read root fingerprint during setup: {str(e)}")
+            except BaseException as e:
+                if getattr(e, "sw", None) in (0x6f00, 0x6d00, 0x6700):
+                    self.logger.info(f"could not read root fingerprint during setup (sw={hex(e.sw)})")
+                else:
+                    raise
         except ScriptTypeNotSupported:
             raise  # this is handled in derivation_dialog
         except BaseException as e:
@@ -659,6 +668,17 @@ class BaseWizard(Logger):
             try:
                 k.handler = self.plugin.create_handler(self)
                 password = k.get_password_for_storage_encryption()
+            except UserFacingException as e:
+                self.logger.info(f"hardware storage-encryption derivation failed: {str(e)}")
+                self.reset_stack()
+                self.request_password(
+                    run_next=lambda password, encrypt_storage: self.on_password(
+                        password,
+                        encrypt_storage=encrypt_storage,
+                        storage_enc_version=StorageEncryptionVersion.USER_PASSWORD,
+                        encrypt_keystore=encrypt_keystore),
+                    force_disable_encrypt_cb=not encrypt_keystore)
+                return
             except UserCancelled:
                 devmgr = self.plugins.device_manager
                 devmgr.unpair_xpub(k.xpub)

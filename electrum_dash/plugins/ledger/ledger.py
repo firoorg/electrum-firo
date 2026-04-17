@@ -15,6 +15,7 @@ from electrum_firo.i18n import _
 from electrum_firo.keystore import Hardware_KeyStore
 from electrum_firo.transaction import Transaction, PartialTransaction, PartialTxInput, PartialTxOutput
 from electrum_firo.wallet import Standard_Wallet
+from electrum_firo.storage import get_derivation_used_for_hw_device_encryption
 from electrum_firo.util import bfh, bh2u, versiontuple, UserFacingException
 from electrum_firo.base_wizard import ScriptTypeNotSupported
 from electrum_firo.logging import get_logger
@@ -28,6 +29,11 @@ _logger = get_logger(__name__)
 
 
 def setAlternateCoinVersions(self, regular, p2sh_or_exp, p2sh=None):
+    """Set alternate address versions on the device.
+
+    Legacy callers can pass 2 args: (regular, p2sh).
+    Dash/Firo callers can pass 3 args: (regular, exp2pkh, p2sh).
+    """
     if p2sh is None:
         versions = [regular, p2sh_or_exp]
     else:
@@ -58,6 +64,10 @@ MSG_NEEDS_FW_UPDATE_GENERIC = _('Firmware version too old. Please update at') + 
                       ' https://www.ledgerwallet.com'
 MULTI_OUTPUT_SUPPORT = '1.1.4'
 ALTERNATIVE_COIN_VERSION = '1.0.1'
+# Dedicated fallback account for wallet-file encryption on Ledger.
+# We intentionally avoid account 0 so this key-space stays separate
+# from normal receiving/change derivations.
+LEDGER_STORAGE_ENCRYPTION_ACCOUNT = 100
 
 
 def test_pin_unlocked(func):
@@ -189,6 +199,7 @@ class Ledger_Client(HardwareClientBase):
         self.preflightDone = False
         self._product_key = product_key
         self._soft_device_id = None
+        self._root_fingerprint = None
 
     def is_pairable(self):
         return True
@@ -210,10 +221,14 @@ class Ledger_Client(HardwareClientBase):
                     self._soft_device_id = self.request_root_fingerprint_from_device()
                 except BTChipException as e:
                     if e.sw in (0x6f00, 0x6d00, 0x6700):
-                        _logger.warning(f"could not read soft_device_id from Ledger (sw={hex(e.sw)}), continuing without it")
-                        return None
+                        fallback_path = "m/44'/{}'/0'".format(constants.net.BIP44_COIN_TYPE)
+                        xpub = self.get_xpub(fallback_path, xtype='standard')
+                        self._soft_device_id = f"ledger-fallback:{hashlib.sha256(xpub.encode('ascii')).hexdigest()[:32]}"
+                        _logger.warning(f"using fallback soft_device_id for Ledger (sw={hex(e.sw)})")
+                        return self._soft_device_id
                     raise
-                except UserFacingException:
+                except UserFacingException as e:
+                    _logger.info(f"get_soft_device_id: {str(e)}. Returning None during enumeration.")
                     return None
         return self._soft_device_id
 
@@ -233,16 +248,20 @@ class Ledger_Client(HardwareClientBase):
 
     @runs_in_hwd_thread
     def request_root_fingerprint_from_device(self) -> str:
-        try:
-            return HardwareClientBase.request_root_fingerprint_from_device(self)
-        except BTChipException as e:
-            if e.sw in (0x6f00, 0x6d00, 0x6700):
-                fallback_path = "m/44'/{}'/0'".format(constants.net.BIP44_COIN_TYPE)
-                xpub = self.get_xpub(fallback_path, xtype='standard')
-                return hashlib.sha256(xpub.encode('ascii')).hexdigest()[:8]
-            raise
+        if self._root_fingerprint:
+            return self._root_fingerprint
+        self._root_fingerprint = HardwareClientBase.request_root_fingerprint_from_device(self)
+        return self._root_fingerprint
 
     def _map_path_for_ledger_app(self, bip32_path: str) -> str:
+        storage_derivation = get_derivation_used_for_hw_device_encryption()
+        storage_derivation = storage_derivation[2:] if storage_derivation.startswith("m/") else storage_derivation
+        if bip32_path == storage_derivation:
+            app_coin_type = 136 if constants.net.BIP44_COIN_TYPE == 1 else constants.net.BIP44_COIN_TYPE
+            mapped = f"44'/{app_coin_type}'/{LEDGER_STORAGE_ENCRYPTION_ACCOUNT}'"
+            _logger.warning(f"mapping ledger storage-encryption path '{bip32_path}' -> '{mapped}'")
+            return mapped
+
         if constants.net.BIP44_COIN_TYPE == 1 and bip32_path.startswith("44'/1'/"):
             mapped = bip32_path.replace("44'/1'/", "44'/136'/", 1)
             _logger.warning(f"mapping testnet ledger path '{bip32_path}' -> '{mapped}'")
@@ -255,21 +274,15 @@ class Ledger_Client(HardwareClientBase):
             return HardwareClientBase.get_password_for_storage_encryption(self)
         except BTChipException as e:
             if e.sw in (0x6f00, 0x6d00, 0x6700):
-                fallback_path = "m/44'/{}'/0'".format(constants.net.BIP44_COIN_TYPE)
-                xpub = self.get_xpub(fallback_path, "standard")
-                return hashlib.sha256(xpub.encode('ascii')).hexdigest()
+                raise UserFacingException(_("Ledger rejected storage-encryption derivation. "
+                                            "Please unlock the device, open the Firo app, "
+                                            "and try again.")) from e
             raise
 
     @runs_in_hwd_thread
     @test_pin_unlocked
     def get_xpub(self, bip32_path, xtype):
         self.checkDevice()
-        # bip32_path is of the form 44'/5'/1'
-        # S-L-O-W - we don't handle the fingerprint directly, so compute
-        # it manually from the previous node
-        # This only happens once so it's bearable
-        #self.get_client() # prompt for the PIN before displaying the dialog if necessary
-        #self.handler.show_message("Computing master public key")
         bip32_path = bip32.normalize_bip32_derivation(bip32_path)
         bip32_intpath = bip32.convert_bip32_path_to_list_of_uint32(bip32_path)
         bip32_path = bip32_path[2:]  # cut off "m/"
@@ -355,7 +368,7 @@ class Ledger_Client(HardwareClientBase):
                         msg = "Enter your Ledger PIN - remaining attempts : " + str(remaining_attempts)
                     else:
                         msg = "Enter your Ledger PIN - WARNING : LAST ATTEMPT. If the PIN is not correct, the dongle will be wiped."
-                    confirmed, p, pin = self.password_dialog(msg)
+                    confirmed, _p, pin = self.password_dialog(msg)
                     if not confirmed:
                         raise UserFacingException('Aborted by user - please unplug the dongle and plug it again before retrying')
                     pin = pin.encode()
@@ -369,6 +382,7 @@ class Ledger_Client(HardwareClientBase):
                 except BTChipException as e:
                     if e.sw in (0x6f00, 0x6d00, 0x6e00):
                         _logger.warning(f"setAlternateCoinVersions rejected by device (sw={hex(e.sw)}), continuing")
+                        self.canAlternateCoinVersions = False
                     else:
                         raise e
         except BTChipException as e:
