@@ -27,8 +27,12 @@ from ..hw_wallet.plugin import is_any_tx_output_on_change_branch, validate_op_re
 _logger = get_logger(__name__)
 
 
-def setAlternateCoinVersions(self, regular, p2sh):
-    apdu = [self.BTCHIP_CLA, 0x14, 0x00, 0x00, 0x02, regular, p2sh]
+def setAlternateCoinVersions(self, regular, p2sh_or_exp, p2sh=None):
+    if p2sh is None:
+        versions = [regular, p2sh_or_exp]
+    else:
+        versions = [regular, p2sh_or_exp, p2sh]
+    apdu = [self.BTCHIP_CLA, 0x14, 0x00, 0x00, len(versions), *versions]
     self.dongle.exchange(bytearray(apdu))
 
 
@@ -202,7 +206,15 @@ class Ledger_Client(HardwareClientBase):
             # modern ledger can provide xpub without user interaction
             # (hw1 would prompt for PIN)
             if not self.is_hw1():
-                self._soft_device_id = self.request_root_fingerprint_from_device()
+                try:
+                    self._soft_device_id = self.request_root_fingerprint_from_device()
+                except BTChipException as e:
+                    if e.sw in (0x6f00, 0x6d00, 0x6700):
+                        _logger.warning(f"could not read soft_device_id from Ledger (sw={hex(e.sw)}), continuing without it")
+                        return None
+                    raise
+                except UserFacingException:
+                    return None
         return self._soft_device_id
 
     def is_hw1(self) -> bool:
@@ -220,6 +232,35 @@ class Ledger_Client(HardwareClientBase):
         return True
 
     @runs_in_hwd_thread
+    def request_root_fingerprint_from_device(self) -> str:
+        try:
+            return HardwareClientBase.request_root_fingerprint_from_device(self)
+        except BTChipException as e:
+            if e.sw in (0x6f00, 0x6d00, 0x6700):
+                fallback_path = "m/44'/{}'/0'".format(constants.net.BIP44_COIN_TYPE)
+                xpub = self.get_xpub(fallback_path, xtype='standard')
+                return hashlib.sha256(xpub.encode('ascii')).hexdigest()[:8]
+            raise
+
+    def _map_path_for_ledger_app(self, bip32_path: str) -> str:
+        if constants.net.BIP44_COIN_TYPE == 1 and bip32_path.startswith("44'/1'/"):
+            mapped = bip32_path.replace("44'/1'/", "44'/136'/", 1)
+            _logger.warning(f"mapping testnet ledger path '{bip32_path}' -> '{mapped}'")
+            return mapped
+        return bip32_path
+
+    @runs_in_hwd_thread
+    def get_password_for_storage_encryption(self) -> str:
+        try:
+            return HardwareClientBase.get_password_for_storage_encryption(self)
+        except BTChipException as e:
+            if e.sw in (0x6f00, 0x6d00, 0x6700):
+                fallback_path = "m/44'/{}'/0'".format(constants.net.BIP44_COIN_TYPE)
+                xpub = self.get_xpub(fallback_path, "standard")
+                return hashlib.sha256(xpub.encode('ascii')).hexdigest()
+            raise
+
+    @runs_in_hwd_thread
     @test_pin_unlocked
     def get_xpub(self, bip32_path, xtype):
         self.checkDevice()
@@ -232,16 +273,28 @@ class Ledger_Client(HardwareClientBase):
         bip32_path = bip32.normalize_bip32_derivation(bip32_path)
         bip32_intpath = bip32.convert_bip32_path_to_list_of_uint32(bip32_path)
         bip32_path = bip32_path[2:]  # cut off "m/"
+        device_path = self._map_path_for_ledger_app(bip32_path)
+        device_intpath = bip32.convert_bip32_path_to_list_of_uint32(f"m/{device_path}")
         if len(bip32_intpath) >= 1:
-            prevPath = bip32.convert_bip32_intpath_to_strpath(bip32_intpath[:-1])[2:]
-            nodeData = self.dongleObject.getWalletPublicKey(prevPath)
-            publicKey = compress_public_key(nodeData['publicKey'])
-            fingerprint_bytes = hash_160(publicKey)[0:4]
+            prevPath = bip32.convert_bip32_intpath_to_strpath(device_intpath[:-1])[2:]
+            if prevPath:
+                try:
+                    nodeData = self.dongleObject.getWalletPublicKey(prevPath)
+                    publicKey = compress_public_key(nodeData['publicKey'])
+                    fingerprint_bytes = hash_160(publicKey)[0:4]
+                except BTChipException as e:
+                    if e.sw in (0x6f00, 0x6d00, 0x6700):
+                        _logger.warning(f"could not read parent pubkey for '{prevPath}' (sw={hex(e.sw)}), using zero fingerprint")
+                        fingerprint_bytes = bytes(4)
+                    else:
+                        raise
+            else:
+                fingerprint_bytes = bytes(4)
             childnum_bytes = bip32_intpath[-1].to_bytes(length=4, byteorder="big")
         else:
             fingerprint_bytes = bytes(4)
             childnum_bytes = bytes(4)
-        nodeData = self.dongleObject.getWalletPublicKey(bip32_path)
+        nodeData = self.dongleObject.getWalletPublicKey(device_path)
         publicKey = compress_public_key(nodeData['publicKey'])
         depth = len(bip32_intpath)
         return BIP32Node(xtype=xtype,
@@ -286,31 +339,38 @@ class Ledger_Client(HardwareClientBase):
             if not checkFirmware(firmwareInfo):
                 self.close()
                 raise UserFacingException(MSG_NEEDS_FW_UPDATE_GENERIC)
-            try:
-                self.dongleObject.getOperationMode()
-            except BTChipException as e:
-                if (e.sw == 0x6985):
-                    self.close()
-                    self.handler.get_setup()
-                    # Acquire the new client on the next run
-                else:
-                    raise e
-            if self.has_detached_pin_support(self.dongleObject) and not self.is_pin_validated(self.dongleObject):
-                assert self.handler, "no handler for client"
-                remaining_attempts = self.dongleObject.getVerifyPinRemainingAttempts()
-                if remaining_attempts != 1:
-                    msg = "Enter your Ledger PIN - remaining attempts : " + str(remaining_attempts)
-                else:
-                    msg = "Enter your Ledger PIN - WARNING : LAST ATTEMPT. If the PIN is not correct, the dongle will be wiped."
-                confirmed, p, pin = self.password_dialog(msg)
-                if not confirmed:
-                    raise UserFacingException('Aborted by user - please unplug the dongle and plug it again before retrying')
-                pin = pin.encode()
-                self.dongleObject.verifyPin(pin)
-                if self.canAlternateCoinVersions:
+            if self.is_hw1():
+                try:
+                    self.dongleObject.getOperationMode()
+                except BTChipException as e:
+                    if (e.sw == 0x6985):
+                        self.close()
+                        self.handler.get_setup()
+                    else:
+                        raise e
+                if self.has_detached_pin_support(self.dongleObject) and not self.is_pin_validated(self.dongleObject):
+                    assert self.handler, "no handler for client"
+                    remaining_attempts = self.dongleObject.getVerifyPinRemainingAttempts()
+                    if remaining_attempts != 1:
+                        msg = "Enter your Ledger PIN - remaining attempts : " + str(remaining_attempts)
+                    else:
+                        msg = "Enter your Ledger PIN - WARNING : LAST ATTEMPT. If the PIN is not correct, the dongle will be wiped."
+                    confirmed, p, pin = self.password_dialog(msg)
+                    if not confirmed:
+                        raise UserFacingException('Aborted by user - please unplug the dongle and plug it again before retrying')
+                    pin = pin.encode()
+                    self.dongleObject.verifyPin(pin)
+
+            if self.canAlternateCoinVersions:
+                try:
                     self.dongleObject.setAlternateCoinVersions(constants.net.ADDRTYPE_P2PKH,
                                                                constants.net.ADDRTYPE_EXP2PKH,
                                                                constants.net.ADDRTYPE_P2SH)
+                except BTChipException as e:
+                    if e.sw in (0x6f00, 0x6d00, 0x6e00):
+                        _logger.warning(f"setAlternateCoinVersions rejected by device (sw={hex(e.sw)}), continuing")
+                    else:
+                        raise e
         except BTChipException as e:
             if (e.sw == 0x6faa):
                 raise UserFacingException("Dongle is temporarily locked - please unplug it and replug it again")
@@ -330,6 +390,10 @@ class Ledger_Client(HardwareClientBase):
             except BTChipException as e:
                 if (e.sw == 0x6d00 or e.sw == 0x6700):
                     raise UserFacingException(_("Device not in Dash mode")) from e
+                if e.sw == 0x6f00:
+                    raise UserFacingException(_("Ledger communication failed (status 6f00). "
+                                                "Please unlock your device, open the Dash app, "
+                                                "and make sure firmware/app versions are compatible.")) from e
                 raise e
             self.preflightDone = True
 
@@ -770,8 +834,9 @@ class LedgerPlugin(HW_PluginBase):
     def setup_device(self, device_info, wizard, purpose):
         device_id = device_info.device.id_
         client = self.scan_and_create_client_for_device(device_id=device_id, wizard=wizard)
+        setup_path = "m/44'/{}'/0'".format(constants.net.BIP44_COIN_TYPE)
         wizard.run_task_without_blocking_gui(
-            task=lambda: client.get_xpub("m/0'", 'standard'))  # TODO replace by direct derivation once Nano S > 1.1
+            task=lambda: client.get_xpub(setup_path, 'standard'))
         return client
 
     def get_xpub(self, device_id, derivation, xtype, wizard):
