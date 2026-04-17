@@ -13,9 +13,9 @@ from electrum_firo.bitcoin import (int_to_hex, var_int, b58_address_to_hash160,
 from electrum_firo.bip32 import BIP32Node, convert_bip32_intpath_to_strpath
 from electrum_firo.i18n import _
 from electrum_firo.keystore import Hardware_KeyStore
+from electrum_firo.storage import get_derivation_used_for_hw_device_encryption
 from electrum_firo.transaction import Transaction, PartialTransaction, PartialTxInput, PartialTxOutput
 from electrum_firo.wallet import Standard_Wallet
-from electrum_firo.storage import get_derivation_used_for_hw_device_encryption
 from electrum_firo.util import bfh, bh2u, versiontuple, UserFacingException
 from electrum_firo.base_wizard import ScriptTypeNotSupported
 from electrum_firo.logging import get_logger
@@ -203,7 +203,22 @@ class Ledger_Client(HardwareClientBase):
             # modern ledger can provide xpub without user interaction
             # (hw1 would prompt for PIN)
             if not self.is_hw1():
-                self._soft_device_id = self.request_root_fingerprint_from_device()
+                try:
+                    self._soft_device_id = self.request_root_fingerprint_from_device()
+                except BTChipException as e:
+                    if e.sw in (0x6f00, 0x6d00, 0x6700):
+                        # Some Ledger app/firmware combos reject the legacy m/0' path
+                        # used by request_root_fingerprint_from_device().
+                        # Keep a deterministic fallback soft id for enumeration.
+                        fallback_path = "m/44'/{}'/0'".format(constants.net.BIP44_COIN_TYPE)
+                        xpub = self.get_xpub(fallback_path, xtype='standard')
+                        digest = hashlib.sha256(xpub.encode('ascii')).hexdigest()[:32]
+                        self._soft_device_id = f"ledger-fallback:{digest}"
+                    else:
+                        raise
+                except UserFacingException:
+                    # During enumeration, avoid surfacing transient/UX errors.
+                    return None
         return self._soft_device_id
 
     def is_hw1(self) -> bool:
@@ -224,23 +239,49 @@ class Ledger_Client(HardwareClientBase):
     @test_pin_unlocked
     def get_xpub(self, bip32_path, xtype):
         self.checkDevice()
-        if bip32_path == "m/0'" or bip32_path == get_derivation_used_for_hw_device_encryption():
-            bip32_path = "m/44'/{}'".format(constants.net.BIP44_COIN_TYPE) + bip32_path[1:]
+        if bip32_path == "m/0'":
+            bip32_path = "m/44'/{}'/0'".format(constants.net.BIP44_COIN_TYPE)
         bip32_path = bip32.normalize_bip32_derivation(bip32_path)
-        bip32_intpath = bip32.convert_bip32_path_to_list_of_uint32(bip32_path)
-        bip32_path = bip32_path[2:]  # cut off "m/"
-        if len(bip32_intpath) >= 1:
-            prevPath = bip32.convert_bip32_intpath_to_strpath(bip32_intpath[:-1])[2:]
-            nodeData = self.dongleObject.getWalletPublicKey(prevPath)
-            publicKey = compress_public_key(nodeData['publicKey'])
-            fingerprint_bytes = hash_160(publicKey)[0:4]
-            childnum_bytes = bip32_intpath[-1].to_bytes(length=4, byteorder="big")
-        else:
-            fingerprint_bytes = bytes(4)
-            childnum_bytes = bytes(4)
-        nodeData = self.dongleObject.getWalletPublicKey(bip32_path)
+        storage_encryption_path = bip32.normalize_bip32_derivation(
+            get_derivation_used_for_hw_device_encryption()
+        )
+        remapped_storage_path = None
+        if bip32_path == storage_encryption_path:
+            remapped_storage_path = "m/44'/{}'".format(constants.net.BIP44_COIN_TYPE) + bip32_path[1:]
+
+        def _derive_node_data(path: str):
+            intpath = bip32.convert_bip32_path_to_list_of_uint32(path)
+            ledger_path = path[2:]  # cut off "m/"
+            if len(intpath) >= 1:
+                prevPath = bip32.convert_bip32_intpath_to_strpath(intpath[:-1])[2:]
+                if prevPath:
+                    try:
+                        prev_node = self.dongleObject.getWalletPublicKey(prevPath)
+                        prev_public_key = compress_public_key(prev_node['publicKey'])
+                        fingerprint = hash_160(prev_public_key)[0:4]
+                    except BTChipException as e:
+                        if e.sw in (0x6f00, 0x6d00, 0x6700):
+                            fingerprint = bytes(4)
+                        else:
+                            raise
+                else:
+                    fingerprint = bytes(4)
+                childnum = intpath[-1].to_bytes(length=4, byteorder="big")
+            else:
+                fingerprint = bytes(4)
+                childnum = bytes(4)
+            node = self.dongleObject.getWalletPublicKey(ledger_path)
+            depth_ = len(intpath)
+            return node, fingerprint, childnum, depth_
+
+        try:
+            nodeData, fingerprint_bytes, childnum_bytes, depth = _derive_node_data(bip32_path)
+        except BTChipException as e:
+            if remapped_storage_path and e.sw in (0x6f00, 0x6d00, 0x6700):
+                nodeData, fingerprint_bytes, childnum_bytes, depth = _derive_node_data(remapped_storage_path)
+            else:
+                raise
         publicKey = compress_public_key(nodeData['publicKey'])
-        depth = len(bip32_intpath)
         return BIP32Node(xtype=xtype,
                          eckey=ecc.ECPubkey(bytes(publicKey)),
                          chaincode=nodeData['chainCode'],
@@ -767,8 +808,9 @@ class LedgerPlugin(HW_PluginBase):
     def setup_device(self, device_info, wizard, purpose):
         device_id = device_info.device.id_
         client = self.scan_and_create_client_for_device(device_id=device_id, wizard=wizard)
+        setup_path = "m/44'/{}'/0'".format(constants.net.BIP44_COIN_TYPE)
         wizard.run_task_without_blocking_gui(
-            task=lambda: client.get_xpub("m/0'", 'standard'))  # TODO replace by direct derivation once Nano S > 1.1
+            task=lambda: client.get_xpub(setup_path, 'standard'))
         return client
 
     def get_xpub(self, device_id, derivation, xtype, wizard):
