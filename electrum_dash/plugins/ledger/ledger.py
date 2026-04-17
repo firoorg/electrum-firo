@@ -15,6 +15,7 @@ from electrum_firo.i18n import _
 from electrum_firo.keystore import Hardware_KeyStore
 from electrum_firo.transaction import Transaction, PartialTransaction, PartialTxInput, PartialTxOutput
 from electrum_firo.wallet import Standard_Wallet
+from electrum_firo.storage import get_derivation_used_for_hw_device_encryption
 from electrum_firo.util import bfh, bh2u, versiontuple, UserFacingException
 from electrum_firo.base_wizard import ScriptTypeNotSupported
 from electrum_firo.logging import get_logger
@@ -223,12 +224,8 @@ class Ledger_Client(HardwareClientBase):
     @test_pin_unlocked
     def get_xpub(self, bip32_path, xtype):
         self.checkDevice()
-        # bip32_path is of the form 44'/5'/1'
-        # S-L-O-W - we don't handle the fingerprint directly, so compute
-        # it manually from the previous node
-        # This only happens once so it's bearable
-        #self.get_client() # prompt for the PIN before displaying the dialog if necessary
-        #self.handler.show_message("Computing master public key")
+        if bip32_path == "m/0'" or bip32_path == get_derivation_used_for_hw_device_encryption():
+            bip32_path = "m/44'/{}'".format(constants.net.BIP44_COIN_TYPE) + bip32_path[1:]
         bip32_path = bip32.normalize_bip32_derivation(bip32_path)
         bip32_intpath = bip32.convert_bip32_path_to_list_of_uint32(bip32_path)
         bip32_path = bip32_path[2:]  # cut off "m/"
