@@ -250,6 +250,9 @@ class Ledger_Client(HardwareClientBase):
     def request_root_fingerprint_from_device(self) -> str:
         if self._root_fingerprint:
             return self._root_fingerprint
+        # Intentionally do not synthesize a fallback fingerprint here.
+        # Returning anything other than the real root fingerprint can cause
+        # device-id drift across sessions and false "device changed" signals.
         self._root_fingerprint = HardwareClientBase.request_root_fingerprint_from_device(self)
         return self._root_fingerprint
 
@@ -262,6 +265,14 @@ class Ledger_Client(HardwareClientBase):
             _logger.warning(f"mapping ledger storage-encryption path '{bip32_path}' -> '{mapped}'")
             return mapped
 
+        # Ledger Firo app currently rejects/does not support standard testnet
+        # coin_type 1 paths (44'/1'/...). We remap to 44'/136'/... so device
+        # queries/signing can proceed.
+        #
+        # Security note: this reuses the mainnet coin-type keyspace on-device.
+        # BIP32 keys are network-agnostic, so the same private key can sign for
+        # either network; treat testnet key handling with the same care as mainnet.
+        # Revisit this when Ledger Firo app adds native 44'/1' support.
         if constants.net.BIP44_COIN_TYPE == 1 and bip32_path.startswith("44'/1'/"):
             mapped = bip32_path.replace("44'/1'/", "44'/136'/", 1)
             _logger.warning(f"mapping testnet ledger path '{bip32_path}' -> '{mapped}'")
