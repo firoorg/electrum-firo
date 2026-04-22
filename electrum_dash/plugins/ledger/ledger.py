@@ -664,8 +664,8 @@ class LedgerPlugin(HW_PluginBase):
                    (0x2c97, 0x4011), # Nano-X app-bitcoin >= 1.5.1
                    (0x2c97, 0x4015), # Nano-X app-bitcoin >= 1.5.1
                    (0x2c97, 0x0005), # Nano-S Plus
-                   (0x2c97, 0x0006), # RFU
-                   (0x2c97, 0x0007), # RFU
+                   (0x2c97, 0x0006), # Stax
+                   (0x2c97, 0x0007), # Flex
                    (0x2c97, 0x0008), # RFU
                    (0x2c97, 0x0009), # RFU
                    (0x2c97, 0x000a)  # RFU
@@ -675,6 +675,8 @@ class LedgerPlugin(HW_PluginBase):
         0x10: "Ledger Nano S",
         0x40: "Ledger Nano X",
         0x50: "Ledger Nano S Plus",
+        0x60: "Ledger Stax",
+        0x70: "Ledger Flex",
     }
     SUPPORTED_XTYPES = ('standard', )
 
@@ -716,6 +718,10 @@ class LedgerPlugin(HW_PluginBase):
                 return True, "Ledger Nano X"
             if product_key == (0x2c97, 0x0005):
                 return True, "Ledger Nano S Plus"
+            if product_key == (0x2c97, 0x0006):
+                return True, "Ledger Stax"
+            if product_key == (0x2c97, 0x0007):
+                return True, "Ledger Flex"
             return True, None
         # modern product_keys
         if product_key[0] == 0x2c97:
