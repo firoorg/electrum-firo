@@ -22,5 +22,17 @@
         "s": "50002",
         "t": "50001",
         "version": "1.4"
+    },
+    "firo.stackwallet.com": {
+        "pruning": "-",
+        "s": "50002",
+        "t": "50001",
+        "version": "1.4"
+    },
+    "firo.mathnodes.com": {
+        "pruning": "-",
+        "s": "50002",
+        "t": "50001",
+        "version": "1.4"
     }
 }
