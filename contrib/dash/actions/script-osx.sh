@@ -17,6 +17,8 @@ else
 fi
 
 
+$PIP_CMD install --no-warn-script-location -U pip==24.0
+
 PYTHON_BLS_WHL=python_bls-0.1.9-cp37-cp37m-macosx_10_6_intel.whl
 PYTHON_BLS_SHA256=9c9842c2cebdcb095aa3b5cae087b0e8a06b1c0f66501491438625f85a33ff00
 echo "${PYTHON_BLS_SHA256}  ${PYTHON_BLS_WHL}" > ${PYTHON_BLS_WHL}.sha256
