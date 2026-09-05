@@ -40,7 +40,16 @@ rm -f libsecp256k1.0.dylib
 cp libsecp256k1/libsecp256k1.0.dylib .
 rm -rf libsecp256k1/ ${LSECP256K1_FILE} ${LSECP256K1_FILE}.sha256
 
-brew install gettext libtool automake pkg-config
+if [[ "$(uname -m)" == "arm64" ]]; then
+    softwareupdate --install-rosetta --agree-to-license || true
+    if [[ ! -x /usr/local/bin/brew ]]; then
+        arch -x86_64 /bin/bash -c \
+            "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    fi
+    arch -x86_64 /usr/local/bin/brew install gettext libtool automake pkg-config
+else
+    brew install gettext libtool automake pkg-config
+fi
 
 if [[ -n $GITHUB_REF ]]; then
     echo "Building ZBar dylib..."

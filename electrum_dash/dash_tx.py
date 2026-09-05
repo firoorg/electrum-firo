@@ -877,6 +877,7 @@ SPEC_PRO_UP_REV_TX = 4
 SPEC_CB_TX = 5
 LELANTUS_JSPLIT = 8
 SPARK_SPEND = 9
+SPARK_SPEND_V2 = 11
 
 
 SPEC_TX_HANDLERS = {
@@ -887,6 +888,7 @@ SPEC_TX_HANDLERS = {
     SPEC_CB_TX: DashCbTx,
     LELANTUS_JSPLIT: FiroLelantusJsplitTx,
     SPARK_SPEND: FiroSparkSpend,
+    SPARK_SPEND_V2: FiroSparkSpend,
 }
 
 
@@ -911,7 +913,8 @@ SPEC_TX_NAMES = {
     SPEC_PRO_UP_REV_TX: 'ProUpRevTx',
     SPEC_CB_TX: 'CbTx',
     LELANTUS_JSPLIT: 'LelantusJsplit',
-    SPARK_SPEND: 'SparkSpend'
+    SPARK_SPEND: 'SparkSpend',
+    SPARK_SPEND_V2: 'SparkSpend',
 }
 
 
