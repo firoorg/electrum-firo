@@ -28,7 +28,9 @@ $PIP_CMD install --no-dependencies --no-warn-script-location -U x11_hash>=1.4
 $PIP_CMD install --no-dependencies --no-warn-script-location -U \
     -r contrib/deterministic-build/requirements-build-mac.txt
 
-if command -v brew >/dev/null 2>&1; then
+if [[ -x /usr/local/bin/brew ]]; then
+  export PATH="$(/usr/local/bin/brew --prefix gettext)/bin:$PATH"
+elif command -v brew >/dev/null 2>&1; then
   export PATH="$(brew --prefix gettext)/bin:$PATH"
 else
   export PATH="/usr/local/opt/gettext/bin:$PATH"
