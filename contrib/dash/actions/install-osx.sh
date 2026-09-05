@@ -46,10 +46,28 @@ if [[ "$(uname -m)" == "arm64" ]]; then
         arch -x86_64 /bin/bash -c \
             "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     fi
-    arch -x86_64 /usr/local/bin/brew install gettext libtool automake pkg-config gmp
+    arch -x86_64 /usr/local/bin/brew install gettext libtool automake pkg-config
 else
-    brew install gettext libtool automake pkg-config gmp
+    brew install gettext libtool automake pkg-config
 fi
+
+GMP_VER=6.3.0
+GMP_FILE=gmp-${GMP_VER}.tar.xz
+GMP_SHA256=a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898
+echo "${GMP_SHA256}  ${GMP_FILE}" > ${GMP_FILE}.sha256
+curl -O -L https://ftp.gnu.org/gnu/gmp/${GMP_FILE}
+shasum -a256 -s -c ${GMP_FILE}.sha256
+tar -xf ${GMP_FILE}
+pushd gmp-${GMP_VER}
+if [[ "$(uname -m)" == "arm64" ]]; then
+    CC="clang -arch x86_64" ./configure --prefix=/usr/local --host=x86_64-apple-darwin
+else
+    ./configure --prefix=/usr/local
+fi
+make -j$(sysctl -n hw.ncpu)
+make install
+popd
+rm -rf gmp-${GMP_VER} ${GMP_FILE} ${GMP_FILE}.sha256
 
 if [[ -n $GITHUB_REF ]]; then
     echo "Building ZBar dylib..."
