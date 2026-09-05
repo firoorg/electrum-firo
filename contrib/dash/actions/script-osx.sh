@@ -17,6 +17,10 @@ else
 fi
 
 
+$PIP_CMD install --no-dependencies --no-warn-script-location \
+    --hash=sha256:9c9842c2cebdcb095aa3b5cae087b0e8a06b1c0f66501491438625f85a33ff00 \
+    https://files.pythonhosted.org/packages/5d/96/856dffe5f31ae604ba1a751c9e60dd7cf201cb4131946ddf05eac0b3852b/python_bls-0.1.9-cp37-cp37m-macosx_10_6_intel.whl
+
 $PIP_CMD install --no-dependencies --no-warn-script-location -U \
     -r contrib/deterministic-build/requirements.txt
 $PIP_CMD install --no-dependencies --no-warn-script-location -U \
