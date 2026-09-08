@@ -34,5 +34,17 @@
         "s": "50002",
         "t": "50001",
         "version": "1.4"
+    },
+    "carover0.xyz": {
+        "pruning": "-",
+        "s": "50002",
+        "t": "50001",
+        "version": "1.4"
+    },
+    "electrumx.firoblocks.app": {
+        "pruning": "-",
+        "s": "50002",
+        "t": "50001",
+        "version": "1.4"
     }
 }
