@@ -478,13 +478,18 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                     continue
                 serialized_b64, txid_b64, context_b64 = row
                 try:
+                    txid = cls._decode_b64(txid_b64)[::-1].hex()
+                except Exception as e:
+                    _logger.error(
+                        f'Skipping spark set row with malformed txid: {e!r}')
+                    continue
+                try:
                     recovered = libsparkmobile.identify_and_recover_coin(
                         cls._decode_b64(serialized_b64),
                         cls._decode_b64(context_b64),
                         view_key,
                         is_testnet=bool(constants.net.TESTNET))
                 except Exception as e:
-                    txid = cls._decode_b64(txid_b64)[::-1].hex()
                     _logger.error(
                         f'Error identifying spark coin in tx {txid} '
                         f'(this is not expected): {e!r}')
@@ -500,7 +505,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 recovered.update({
                     'type': type_label,
                     'group_id': groupId,
-                    'txid': cls._decode_b64(txid_b64)[::-1].hex(),
+                    'txid': txid,
                     'height': None,
                     'is_used': False,
                     'serialized_coin': serialized_b64,
@@ -784,9 +789,13 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
     async def refreshSparkData(self, refreshProgressRange=None):
         if (not self.wallet.spark_enabled
-                or not libsparkmobile.is_available()):
+                or not libsparkmobile.is_available()
+                or not self.wallet.spark_key_data):
             return
         async with self._sync_lock:
+            key_data = self.wallet.spark_key_data
+            if not key_data:
+                return
             shared = self._shared_cache()
             self._migrate_legacy_spark_cache(shared)
             state = _deepcopy_db_val(self.wallet.db.get('spark_scan_state'))
@@ -795,10 +804,13 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             anon_sets = shared.snapshot_anon_sets()
             groups = shared.snapshot_groups()
             await run_in_thread(
-                self._recover_saved_coins, coins, self.wallet.spark_key_data)
+                self._recover_saved_coins, coins, key_data)
             local_height = self.wallet.get_local_height()
 
-            if local_height < state.get('chain_height', 0):
+            rolled_back = local_height < state.get('chain_height', 0)
+            if rolled_back:
+                shared.clear()
+                anon_sets, used_tags, groups = {}, {}, {}
                 state.pop('firo_spark_cache_set_block_hash_cache', None)
                 for c in coins.values():
                     c['height'] = None
@@ -866,8 +878,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
             for groupId, rows in rawCoinsBySetId.items():
                 found = await run_in_thread(
-                    self._identify_sector, rows, groupId,
-                    self.wallet.spark_key_data)
+                    self._identify_sector, rows, groupId, key_data)
                 self.logger.info(
                     f'refreshSparkData: group {groupId}: scanned {len(rows)} '
                     f'new set coins, identified {len(found)} as ours')
@@ -882,8 +893,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             mempool_rows = await self._fetch_mempool_spark_rows()
             if mempool_rows:
                 found = await run_in_thread(
-                    self._identify_sector, mempool_rows, latestGroupId,
-                    self.wallet.spark_key_data)
+                    self._identify_sector, mempool_rows, latestGroupId, key_data)
                 coins.update(found)
 
             coinsToCheck = [
@@ -918,7 +928,8 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             state['chain_height'] = local_height
             state.pop('groups', None)
             state.pop('used_tags_count', None)
-            self._merge_used_flags(coins)
+            if not rolled_back:
+                self._merge_used_flags(coins)
             shared.update(anon_sets=anon_sets, used_tags=used_tags,
                           groups=groups)
             self.wallet.db.put('spark_scan_state', _deepcopy_db_val(state))
@@ -1509,8 +1520,16 @@ class SparkInterfaceMixin:
         if not coins:
             raise NotEnoughFunds(_('No spendable Spark coins found'))
 
-        transparentSumOut = sum(int(a) for _, a in transparentRecipients)
-        sparkSumOut = sum(int(a) for _, a, _ in privateSparkRecipients)
+        send_all_flag = (
+            amount == '!'
+            or any(a == '!' for _, a in transparentRecipients)
+            or any(a == '!' for _, a, _ in privateSparkRecipients))
+
+        def _amt(a):
+            return 0 if a == '!' else int(a)
+
+        transparentSumOut = sum(_amt(a) for _, a in transparentRecipients)
+        sparkSumOut = sum(_amt(a) for _, a, _ in privateSparkRecipients)
         txAmount = transparentSumOut + sparkSumOut
 
         if transparentSumOut > 50_000 * COIN:
@@ -1518,11 +1537,7 @@ class SparkInterfaceMixin:
                                '(50,000 Firo per transaction).'))
 
         available = sum(int(c['value']) for c in coins)
-        if txAmount > available:
-            raise NotEnoughFunds(_('Insufficient Spark balance'))
 
-        send_all_flag = (amount == '!' or any(a == '!' for _, a in transparentRecipients)
-                         or any(a == '!' for _, a, _ in privateSparkRecipients))
         if send_all_flag:
             if len(transparentRecipients) + len(privateSparkRecipients) != 1:
                 raise ValueError(_('Send-all requires a single recipient'))
@@ -1534,6 +1549,9 @@ class SparkInterfaceMixin:
             transparentSumOut = sum(int(a) for _, a in transparentRecipients)
             sparkSumOut = sum(int(a) for _, a, _ in privateSparkRecipients)
             txAmount = transparentSumOut + sparkSumOut
+
+        if txAmount > available:
+            raise NotEnoughFunds(_('Insufficient Spark balance'))
 
         isSendAll = available == txAmount
 

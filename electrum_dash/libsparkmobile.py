@@ -394,7 +394,11 @@ def _as_hash_bytes(value, name: str) -> bytes:
     return value
 
 
-def _make_data_stream(raw: bytes, keep: list) -> _CCDataStream:
+def _make_data_stream(raw, keep: list) -> _CCDataStream:
+    if not isinstance(raw, (bytes, bytearray, memoryview)):
+        raise ValueError(
+            f'spark coin data must be bytes, got {type(raw).__name__}')
+    raw = bytes(raw)
     buf = (c_ubyte * len(raw)).from_buffer_copy(raw)
     keep.append(buf)
     stream = _CCDataStream()
@@ -416,13 +420,19 @@ def _make_spend_coins(
             serialized = base64.b64decode(''.join(serialized.splitlines()))
         if isinstance(context, str):
             context = base64.b64decode(''.join(context.splitlines()))
+        if not serialized or not context:
+            raise ValueError(f'spend coin {i} is missing serialized coin data')
         coin_stream = _make_data_stream(serialized, keep)
         ctx_stream = _make_data_stream(context, keep)
         keep.extend((coin_stream, ctx_stream))
         arr[i].serializedCoin = ctypes.pointer(coin_stream)
         arr[i].serializedCoinContext = ctypes.pointer(ctx_stream)
-        arr[i].groupId = int(coin['group_id'])
-        arr[i].height = int(coin['height'])
+        try:
+            arr[i].groupId = int(coin['group_id'])
+            arr[i].height = int(coin['height'])
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(
+                f'spend coin {i} has invalid group_id/height: {e!r}')
     keep.append(arr)
     return ctypes.cast(arr, POINTER(_SpendCoinData))
 
@@ -557,31 +567,24 @@ def create_spark_spend_transaction(
                 data.decode('utf-8', 'replace')
                 or 'cCreateSparkSpendTransaction failed')
         scripts = []
-        for i in range(res.contents.outputScriptsLength):
-            s = res.contents.outputScripts[i]
-            scripts.append(ctypes.string_at(s.bytes, s.length))
-            lib.native_free(s.bytes)
-        used = []
-        for i in range(res.contents.usedCoinsLength):
-            u = res.contents.usedCoins[i]
-            used.append({
-                'serialized_coin': ctypes.string_at(
-                    u.serializedCoin.contents.data,
-                    u.serializedCoin.contents.length),
-                'serialized_coin_context': ctypes.string_at(
-                    u.serializedCoinContext.contents.data,
-                    u.serializedCoinContext.contents.length),
-                'group_id': int(u.groupId),
-                'height': int(u.height),
-            })
-            lib.native_free(u.serializedCoin.contents.data)
-            lib.native_free(u.serializedCoin)
-            lib.native_free(u.serializedCoinContext.contents.data)
-            lib.native_free(u.serializedCoinContext)
         if res.contents.outputScripts:
-            lib.native_free(res.contents.outputScripts)
+            for i in range(res.contents.outputScriptsLength):
+                s = res.contents.outputScripts[i]
+                scripts.append(ctypes.string_at(s.bytes, s.length))
+        used = []
         if res.contents.usedCoins:
-            lib.native_free(res.contents.usedCoins)
+            for i in range(res.contents.usedCoinsLength):
+                u = res.contents.usedCoins[i]
+                used.append({
+                    'serialized_coin': ctypes.string_at(
+                        u.serializedCoin.contents.data,
+                        u.serializedCoin.contents.length),
+                    'serialized_coin_context': ctypes.string_at(
+                        u.serializedCoinContext.contents.data,
+                        u.serializedCoinContext.contents.length),
+                    'group_id': int(u.groupId),
+                    'height': int(u.height),
+                })
         return {
             'payload': data,
             'output_scripts': scripts,
@@ -589,6 +592,23 @@ def create_spark_spend_transaction(
             'used_coins': used,
         }
     finally:
+        if res.contents.outputScripts:
+            for i in range(res.contents.outputScriptsLength):
+                if res.contents.outputScripts[i].bytes:
+                    lib.native_free(res.contents.outputScripts[i].bytes)
+            lib.native_free(res.contents.outputScripts)
+        if res.contents.usedCoins:
+            for i in range(res.contents.usedCoinsLength):
+                u = res.contents.usedCoins[i]
+                if u.serializedCoin:
+                    if u.serializedCoin.contents.data:
+                        lib.native_free(u.serializedCoin.contents.data)
+                    lib.native_free(u.serializedCoin)
+                if u.serializedCoinContext:
+                    if u.serializedCoinContext.contents.data:
+                        lib.native_free(u.serializedCoinContext.contents.data)
+                    lib.native_free(u.serializedCoinContext)
+            lib.native_free(res.contents.usedCoins)
         if res.contents.data:
             lib.native_free(res.contents.data)
         lib.native_free(res)

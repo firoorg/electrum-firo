@@ -1008,9 +1008,11 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
                     tx_type_name = SPEC_TX_NAMES[PSTxTypes.SPARK_MINT]
                 height = coin.get('height') or 0
                 timestamp = coin.get('timestamp')
+                confirmations = (max(self.get_local_height() - height + 1, 0)
+                                 if height > 0 else 0)
                 transactions_tmp[txid] = {
                     'txid': txid, 'fee_sat': None, 'height': height,
-                    'confirmations': max(self.get_local_height() - height + 1, 0),
+                    'confirmations': confirmations,
                     'timestamp': timestamp, 'monotonic_timestamp': timestamp,
                     'incoming': True, 'bc_value': Satoshis(value),
                     'bc_balance': Satoshis(0),
@@ -1525,8 +1527,9 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
     def note_spark_broadcast(self, tx: Transaction) -> None:
         try:
             self.add_transaction(tx, allow_unrelated=True)
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning(
+                f'note_spark_broadcast: could not add tx {tx.txid()}: {e!r}')
         self.add_unverified_tx(tx.txid(), TX_HEIGHT_UNCONFIRMED)
         state = json.loads(json.dumps(self.db.get('spark_scan_state', {}) or {}))
         pending = list(state.get('pending_spark_spends') or [])
