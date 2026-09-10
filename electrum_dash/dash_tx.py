@@ -877,6 +877,12 @@ SPEC_PRO_UP_REV_TX = 4
 SPEC_CB_TX = 5
 LELANTUS_JSPLIT = 8
 SPARK_SPEND = 9
+SPARK_SPEND_V2 = 11
+# Both carry a Spark spend; only V2 may hold more than one input, and it is the
+# only format this wallet creates after the H2 fork.
+SPARK_SPEND_TYPES = (SPARK_SPEND, SPARK_SPEND_V2)
+OP_SPARKMINT = 0xd1
+OP_SPARKSPEND = 0xd3
 
 
 SPEC_TX_HANDLERS = {
@@ -887,6 +893,7 @@ SPEC_TX_HANDLERS = {
     SPEC_CB_TX: DashCbTx,
     LELANTUS_JSPLIT: FiroLelantusJsplitTx,
     SPARK_SPEND: FiroSparkSpend,
+    SPARK_SPEND_V2: FiroSparkSpend,
 }
 
 
@@ -901,6 +908,7 @@ class PSTxTypes(IntEnum):
     PS_MIXING_TXS = 65541
     SPEND_PS_COINS = 65542
     OTHER_PS_COINS = 65543
+    SPARK_MINT = 65544
 
 
 SPEC_TX_NAMES = {
@@ -911,8 +919,30 @@ SPEC_TX_NAMES = {
     SPEC_PRO_UP_REV_TX: 'ProUpRevTx',
     SPEC_CB_TX: 'CbTx',
     LELANTUS_JSPLIT: 'LelantusJsplit',
-    SPARK_SPEND: 'SparkSpend'
+    SPARK_SPEND: 'SparkSpend',
+    SPARK_SPEND_V2: 'SparkSpend',
+    PSTxTypes.SPARK_MINT: 'Anonymize',
 }
+
+
+def classify_onchain_tx_type(tx) -> int:
+    if tx is None:
+        return 0
+    try:
+        raw_bytes = bfh(tx.serialize())
+        tx_type = tx_header_to_tx_type(raw_bytes[:4])
+    except Exception:
+        tx_type = int(getattr(tx, 'tx_type', 0) or 0)
+    if tx_type in SPARK_SPEND_TYPES:
+        return tx_type
+    if any(getattr(inp, 'script_sig', None) and inp.script_sig[0] == OP_SPARKSPEND
+           for inp in tx.inputs()):
+        return SPARK_SPEND
+    if tx_type:
+        return tx_type
+    if any(o.scriptpubkey[:1] == bytes([OP_SPARKMINT]) for o in tx.outputs()):
+        return PSTxTypes.SPARK_MINT
+    return 0
 
 
 def read_extra_payload(vds, tx_type):
