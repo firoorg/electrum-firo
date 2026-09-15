@@ -43,8 +43,10 @@ rm -rf libsecp256k1/ ${LSECP256K1_FILE} ${LSECP256K1_FILE}.sha256
 if [[ "$(uname -m)" == "arm64" ]]; then
     softwareupdate --install-rosetta --agree-to-license || true
     if [[ ! -x /usr/local/bin/brew ]]; then
-        arch -x86_64 /bin/bash -c \
-            "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        sudo mkdir -p /usr/local/{bin,etc,include,lib,sbin,share,opt,var,Frameworks,Cellar,Caskroom,Homebrew}
+        sudo chown -R "$(whoami)" /usr/local/{bin,etc,include,lib,sbin,share,opt,var,Frameworks,Cellar,Caskroom,Homebrew}
+        git clone --depth 1 https://github.com/Homebrew/brew /usr/local/Homebrew
+        sudo ln -sf /usr/local/Homebrew/bin/brew /usr/local/bin/brew
     fi
     arch -x86_64 /usr/local/bin/brew install gettext libtool automake pkg-config
 else
