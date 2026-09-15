@@ -128,7 +128,7 @@
                     id: amount_e
                     default_text: _('Amount')
                     text: s.amount if s.amount else _('Amount')
-                    disabled: root.is_bip70
+                    disabled: root.is_bip70 or bool(s.parsed_URI and 'op_return' in s.parsed_URI)
                     on_release: Clock.schedule_once(lambda dt: app.amount_dialog(s, True))
             CardSeparator:
                 color: blue_bottom.foreground_color

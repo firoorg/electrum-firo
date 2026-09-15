@@ -889,15 +889,26 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
     # python for android fails to parse query
     if address.find('?') > 0:
         address, query = u.path.split('?')
-        pq = urllib.parse.parse_qs(query)
+        pq = urllib.parse.parse_qs(query, keep_blank_values=True)
     else:
-        pq = urllib.parse.parse_qs(u.query)
+        pq = urllib.parse.parse_qs(u.query, keep_blank_values=True)
+
+    is_bridge = 'op_return' in pq or 'req-op_return' in pq
+    if not is_bridge:
+        # Preserve ordinary URI handling, while never dropping empty bridge data.
+        pq = {key: [v for v in values if v] for key, values in pq.items()}
+        pq = {key: values for key, values in pq.items() if values}
 
     for k, v in pq.items():
         if len(v) != 1:
             raise InvalidBitcoinURI(f'Duplicate Key: {repr(k)}')
 
     out = {k: v[0] for k, v in pq.items()}
+    if is_bridge:
+        from .rosen import normalize_uri_query
+        out = normalize_uri_query(out)
+        if not address or 'address' in out:
+            raise InvalidBitcoinURI('A bridge URI requires one recipient in its path')
     if u.scheme == 'pay':
         out_keys = list(out.keys())
         len_out_keys = len(out_keys)
@@ -919,6 +930,8 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
             if amount > TOTAL_COIN_SUPPLY_LIMIT_IN_BTC * COIN:
                 raise InvalidBitcoinURI(f"amount is out-of-bounds: {amount!r} BTC")
             out['amount'] = int(amount)
+            if is_bridge and out['amount'] <= 0:
+                raise InvalidBitcoinURI('Bridge amount must be positive')
         except Exception as e:
             raise InvalidBitcoinURI(f"failed to parse 'amount' field: {repr(e)}") from e
     if 'message' in out:

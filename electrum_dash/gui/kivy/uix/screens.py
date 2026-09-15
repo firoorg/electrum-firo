@@ -20,7 +20,7 @@ from electrum_firo.invoices import (PR_TYPE_ONCHAIN, PR_DEFAULT_EXPIRATION_WHEN_
                                     PR_PAID, PR_UNKNOWN, PR_EXPIRED, PR_INFLIGHT,
                                     pr_expiration_values, Invoice, OnchainInvoice,
                                     InvoiceExt)
-from electrum_firo import bitcoin, constants
+from electrum_firo import bitcoin, constants, rosen
 from electrum_firo.transaction import tx_from_any, PartialTxOutput
 from electrum_firo.util import (parse_URI, InvalidBitcoinURI, TxMinedInfo,
                                 profiler, InvoiceError)
@@ -350,7 +350,7 @@ class SendScreen(CScreen, Logger):
 
     kvname = 'send'
     payment_request = None  # type: Optional[PaymentRequest]
-    parsed_URI = None
+    parsed_URI = ObjectProperty(None, allownone=True)
     is_ps = False
 
     def __init__(self, **kwargs):
@@ -361,11 +361,15 @@ class SendScreen(CScreen, Logger):
     def set_URI(self, text: str):
         if not self.app.wallet:
             return
+        if self.parsed_URI and 'op_return' in self.parsed_URI:
+            self.do_clear()
         try:
             uri = parse_URI(text, self.app.on_pr, loop=self.app.asyncio_loop)
         except InvalidBitcoinURI as e:
             self.app.show_info(_("Error parsing URI") + f":\n{e}")
             return
+        if 'op_return' in uri:
+            self.do_clear()
         self.parsed_URI = uri
         amount = uri.get('amount')
         self.address = uri.get('address', '')
@@ -375,6 +379,8 @@ class SendScreen(CScreen, Logger):
         self.amount = self.app.format_amount_and_units(amount) if amount else ''
         self.is_max = False
         self.payment_request = None
+        if 'op_return' in uri:
+            self.app.show_info(rosen.format_details(rosen.parse_payload(uri['op_return'])))
 
     def update(self):
         if self.app.wallet is None:
@@ -431,6 +437,8 @@ class SendScreen(CScreen, Logger):
         self.is_max = False
 
     def set_request(self, pr: 'PaymentRequest'):
+        if self.parsed_URI and 'op_return' in self.parsed_URI:
+            return  # Ignore a delayed response to an earlier payment request.
         self.address = pr.get_requestor()
         amount = pr.get_amount()
         self.amount = self.app.format_amount_and_units(amount) if amount else ''
@@ -480,6 +488,8 @@ class SendScreen(CScreen, Logger):
                     self.app.show_error(_('Invalid Dash Address') + ':\n' + address)
                     return
                 outputs = [PartialTxOutput.from_address_and_value(address, amount)]
+            outputs = rosen.add_output(outputs, self.parsed_URI, payment_request=self.payment_request)
+            rosen.check_send(outputs, is_private=self.is_ps)
             return self.app.wallet.create_invoice(
                 outputs=outputs,
                 message=message,
@@ -522,6 +532,15 @@ class SendScreen(CScreen, Logger):
     def _do_pay_onchain(self, invoice: OnchainInvoice,
                         invoice_ext: InvoiceExt) -> None:
         outputs = invoice.outputs
+        try:
+            rosen.check_send(outputs, is_private=invoice_ext.is_ps, tx_type=invoice_ext.tx_type)
+        except InvoiceError as e:
+            self.app.show_error(str(e))
+            return
+        data = rosen.bridge_payload(outputs)
+        prompt = _('Send payment?')
+        if data is not None:
+            prompt = rosen.format_details(data) + '\n\n' + prompt
         amount = sum(map(lambda x: x.value, outputs)) if '!' not in [x.value for x in outputs] else '!'
         wallet = self.app.wallet
         mix_rounds = None if not invoice_ext.is_ps else wallet.psman.mix_rounds
@@ -529,14 +548,15 @@ class SendScreen(CScreen, Logger):
         coins = wallet.get_spendable_coins(None, include_ps=include_ps,
                                            min_rounds=mix_rounds)
         make_tx = lambda: self.app.wallet.make_unsigned_transaction(coins=coins, outputs=outputs, min_rounds=mix_rounds)
-        on_pay = lambda tx: self.app.protected(_('Send payment?'), self.send_tx, (tx, invoice, invoice_ext))
+        on_pay = lambda tx: self.app.protected(prompt, self.send_tx, (tx, invoice, invoice_ext))
         d = ConfirmTxDialog(self.app, amount=amount, make_tx=make_tx, on_pay=on_pay)
         d.open()
 
     def send_tx(self, tx, invoice, invoice_ext, password):
         if self.app.wallet.has_password() and password is None:
             return
-        pr = self.payment_request
+        # Saved bridge invoices are not BIP70 requests, regardless of the live form.
+        pr = None if rosen.bridge_payload(invoice.outputs) is not None else self.payment_request
         self.save_invoice_ext(invoice.id, invoice_ext)
         self.save_invoice(invoice)
         def on_success(tx):

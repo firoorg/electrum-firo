@@ -706,6 +706,9 @@ class Abstract_Wallet(AddressSynchronizer, ABC):
             }
 
     def create_invoice(self, *, outputs: List[PartialTxOutput], message, pr, URI) -> Invoice:
+        from . import rosen
+        outputs = rosen.add_output(outputs, URI, payment_request=pr)
+        rosen.check_send(outputs)
         height=self.get_local_height()
         if pr:
             return OnchainInvoice.from_bip70_payreq(pr, height)
@@ -857,6 +860,23 @@ class Abstract_Wallet(AddressSynchronizer, ABC):
         """Returns whether on-chain invoice is satisfied, and list of relevant TXIDs."""
         assert invoice.type == PR_TYPE_ONCHAIN
         assert isinstance(invoice, OnchainInvoice)
+        from . import rosen
+        if rosen.bridge_payload(invoice.outputs) is not None:
+            # Bridge payment and metadata must occur in the SAME eligible tx.
+            # Independent per-script totals can incorrectly match an old payload.
+            matches = None
+            with self.lock, self.transaction_lock:
+                for output in invoice.outputs:
+                    scripthash = bitcoin.script_to_scripthash(output.scriptpubkey.hex())
+                    candidates = set()
+                    for prevout, value in self.db.get_prevouts_by_scripthash(scripthash):
+                        txid = prevout.txid.hex()
+                        height = self.get_tx_height(txid)
+                        if (value == output.value and height.conf >= conf
+                                and not (0 < height.height <= invoice.height)):
+                            candidates.add(txid)
+                    matches = candidates if matches is None else matches & candidates
+                return bool(matches), sorted(matches or [])
         invoice_amounts = defaultdict(int)  # type: Dict[bytes, int]  # scriptpubkey -> value_sats
         for txo in invoice.outputs:  # type: PartialTxOutput
             invoice_amounts[txo.scriptpubkey] += 1 if txo.value == '!' else txo.value
@@ -1273,6 +1293,9 @@ class Abstract_Wallet(AddressSynchronizer, ABC):
             no_ps_data=False,
             tx_type=0,
             extra_payload=b'') -> PartialTransaction:
+
+        from . import rosen
+        rosen.check_send(outputs, is_private=min_rounds is not None, tx_type=tx_type)
 
         if min_rounds is not None:
             if no_ps_data:
