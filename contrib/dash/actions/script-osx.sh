@@ -17,6 +17,16 @@ else
 fi
 
 
+$PIP_CMD install --no-warn-script-location -U pip==24.0
+
+PYTHON_BLS_WHL=python_bls-0.1.9-cp37-cp37m-macosx_10_6_intel.whl
+PYTHON_BLS_SHA256=9c9842c2cebdcb095aa3b5cae087b0e8a06b1c0f66501491438625f85a33ff00
+echo "${PYTHON_BLS_SHA256}  ${PYTHON_BLS_WHL}" > ${PYTHON_BLS_WHL}.sha256
+curl -O -L https://files.pythonhosted.org/packages/5d/96/856dffe5f31ae604ba1a751c9e60dd7cf201cb4131946ddf05eac0b3852b/${PYTHON_BLS_WHL}
+shasum -a256 -s -c ${PYTHON_BLS_WHL}.sha256
+$PIP_CMD install --no-dependencies --no-warn-script-location ${PYTHON_BLS_WHL}
+rm -f ${PYTHON_BLS_WHL} ${PYTHON_BLS_WHL}.sha256
+
 $PIP_CMD install --no-dependencies --no-warn-script-location -U \
     -r contrib/deterministic-build/requirements.txt
 $PIP_CMD install --no-dependencies --no-warn-script-location -U \
@@ -28,7 +38,9 @@ $PIP_CMD install --no-dependencies --no-warn-script-location -U x11_hash>=1.4
 $PIP_CMD install --no-dependencies --no-warn-script-location -U \
     -r contrib/deterministic-build/requirements-build-mac.txt
 
-if command -v brew >/dev/null 2>&1; then
+if [[ -x /usr/local/bin/brew ]]; then
+  export PATH="$(/usr/local/bin/brew --prefix gettext)/bin:$PATH"
+elif command -v brew >/dev/null 2>&1; then
   export PATH="$(brew --prefix gettext)/bin:$PATH"
 else
   export PATH="/usr/local/opt/gettext/bin:$PATH"
