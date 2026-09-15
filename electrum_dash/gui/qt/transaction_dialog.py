@@ -45,7 +45,7 @@ from electrum_firo.bitcoin import base_encode, NLOCKTIME_BLOCKHEIGHT_MAX
 from electrum_firo.dash_tx import SPEC_TX_NAMES
 from electrum_firo.i18n import _
 from electrum_firo.plugin import run_hook
-from electrum_firo import simple_config
+from electrum_firo import simple_config, rosen
 from electrum_firo.transaction import SerializationError, Transaction, PartialTransaction, PartialTxInput
 from electrum_firo.logging import get_logger
 
@@ -257,7 +257,7 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
         self.activateWindow()
 
     def do_broadcast(self):
-        pr = self.main_window.payment_request
+        pr = None if rosen.bridge_payload(self.tx.outputs()) is not None else self.main_window.payment_request
         self.main_window.push_top_level_window(self)
         self.main_window.save_pending_invoice()
         try:

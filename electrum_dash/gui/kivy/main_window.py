@@ -36,7 +36,7 @@ from kivy.utils import platform
 from kivy.properties import (OptionProperty, AliasProperty, ObjectProperty,
                              StringProperty, ListProperty, BooleanProperty, NumericProperty)
 from kivy.cache import Cache
-from kivy.clock import Clock
+from kivy.clock import Clock, mainthread
 from kivy.factory import Factory
 from kivy.metrics import inch
 from kivy.lang import Builder
@@ -417,23 +417,35 @@ class ElectrumWindow(App, Logger):
         self.request_popup = None
 
     def on_pr(self, pr: 'PaymentRequest'):
+        if self.send_screen and self.send_screen.parsed_URI and 'op_return' in self.send_screen.parsed_URI:
+            return  # A late response must not clear or replace a newer bridge URI.
         if not self.wallet:
             self.show_error(_('No wallet loaded.'))
             return
-        if pr.verify(self.wallet.contacts):
-            key = pr.get_id()
-            invoice = self.wallet.get_invoice(key)  # FIXME wrong key...
-            if invoice and self.wallet.get_invoice_status(invoice) == PR_PAID:
-                self.show_error("invoice already paid")
-                self.send_screen.do_clear()
-            elif pr.has_expired():
-                self.show_error(_('Payment request has expired'))
+        verified = pr.verify(self.wallet.contacts)
+
+        @mainthread
+        def on_verified():
+            # Verification may block; recheck after it on the UI thread so a
+            # newer bridge URI cannot be cleared by this older response.
+            if self.send_screen and self.send_screen.parsed_URI and 'op_return' in self.send_screen.parsed_URI:
+                return
+            if verified:
+                key = pr.get_id()
+                invoice = self.wallet.get_invoice(key)  # FIXME wrong key...
+                if invoice and self.wallet.get_invoice_status(invoice) == PR_PAID:
+                    self.show_error("invoice already paid")
+                    self.send_screen.do_clear()
+                elif pr.has_expired():
+                    self.show_error(_('Payment request has expired'))
+                else:
+                    self.switch_to('send')
+                    self.send_screen.set_request(pr)
             else:
-                self.switch_to('send')
-                self.send_screen.set_request(pr)
-        else:
-            self.show_error("invoice error:" + pr.error)
-            self.send_screen.do_clear()
+                self.show_error("invoice error:" + pr.error)
+                self.send_screen.do_clear()
+
+        on_verified()
 
     def on_qr(self, data: str):
         from electrum_firo.bitcoin import is_address

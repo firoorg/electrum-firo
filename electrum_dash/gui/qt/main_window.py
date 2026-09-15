@@ -53,6 +53,7 @@ import electrum_firo
 from electrum_firo.gui import messages
 from electrum_firo import (keystore, ecc, constants, util, bitcoin, commands,
                            paymentrequest)
+from electrum_firo import rosen
 from electrum_firo.base_crash_reporter import BaseCrashReporter
 from electrum_firo.bitcoin import COIN, is_address
 from electrum_firo.dash_tx import DashTxError, ProTxBase, SPEC_TX_NAMES
@@ -1577,6 +1578,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         grid.addWidget(self.extra_payload_label, 9, 0)
         grid.addWidget(self.extra_payload, 9, 1, 1, -1)
 
+        self.rosen_label = QLabel('')
+        self.rosen_label.setTextFormat(Qt.PlainText)
+        self.rosen_label.setWordWrap(True)
+        self.rosen_label.hide()
+        grid.addWidget(self.rosen_label, 10, 1, 1, -1)
+
         def reset_max(text):
             self.max_button.setChecked(False)
             enable = not bool(text) and not self.amount_e.isReadOnly()
@@ -1608,6 +1615,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         return w
 
     def spend_max(self):
+        if self.payto_URI and 'op_return' in self.payto_URI:
+            self.show_error(_('A bridge payment must keep the amount in its URI.'))
+            return
         if run_hook('abort_send', self):
             return
         outputs = self.payto_e.get_outputs(True)
@@ -1680,6 +1690,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             outputs = self.payment_request.get_outputs()
         else:
             outputs = self.payto_e.get_outputs(self.max_button.isChecked())
+        outputs = rosen.add_output(outputs, self.payto_URI, payment_request=self.payment_request)
+        tx_type, _extra_payload = self.extra_payload.get_extra_data()
+        rosen.check_send(outputs, is_private=self.ps_cb.isChecked(), tx_type=tx_type)
         return outputs
 
     def check_send_tab_onchain_outputs_and_show_errors(self, outputs: List[PartialTxOutput]) -> bool:
@@ -1996,6 +2009,15 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                            outputs: List[PartialTxOutput], *,
                            external_keypairs=None, is_ps=False,
                            tx_type=0, extra_payload=b'') -> None:
+        try:
+            rosen.check_send(outputs, is_private=is_ps, tx_type=tx_type)
+        except InvoiceError as e:
+            self.show_error(str(e))
+            return
+        data = rosen.bridge_payload(outputs)
+        if data is not None and not self.question(rosen.format_details(data) + '\n\n' +
+                                                 _('Continue with this bridge payment?')):
+            return
         # trustedcoin requires this
         if run_hook('abort_send', self):
             return
@@ -2072,7 +2094,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 self.show_message(str(e))
                 return
         if is_send:
-            pr = self.payment_request
+            # A saved bridge payment must not inherit another form's BIP70 request.
+            pr = None if rosen.bridge_payload(tx.outputs()) is not None else self.payment_request
             self.save_pending_invoice()
             def sign_done(success):
                 if success:
@@ -2265,6 +2288,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.invoice_list.update()
 
     def payment_request_ok(self):
+        if self.payto_URI and 'op_return' in self.payto_URI:
+            self.payment_request = None
+            return
         self.extra_payload.clear()
         self.hide_extra_payload()
         self.reset_privatesend()
@@ -2290,6 +2316,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.amount_e.textEdited.emit("")
 
     def payment_request_error(self):
+        if self.payto_URI and 'op_return' in self.payto_URI:
+            self.payment_request = None
+            return
         self.extra_payload.clear()
         self.hide_extra_payload()
         self.reset_privatesend()
@@ -2301,6 +2330,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.do_clear()
 
     def on_pr(self, request: 'paymentrequest.PaymentRequest'):
+        # A delayed BIP70 response must not replace a newer bridge request.
+        if self.payto_URI and 'op_return' in self.payto_URI:
+            return
         self.set_onchain(True)
         self.payment_request = request
         if self.payment_request.verify(self.contacts):
@@ -2315,11 +2347,15 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
     def pay_to_URI(self, URI):
         if not URI:
             return
+        if self.payto_URI and 'op_return' in self.payto_URI:
+            self.do_clear()
         try:
             out = util.parse_URI(URI, self.on_pr)
         except InvalidBitcoinURI as e:
             self.show_error(_("Error parsing URI") + f":\n{e}")
             return
+        if 'op_return' in out:
+            self.do_clear()
         self.show_send_tab()
         self.payto_URI = out
         r = out.get('r')
@@ -2342,12 +2378,21 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         if amount:
             self.amount_e.setAmount(amount)
             self.amount_e.textEdited.emit("")
+        if 'op_return' in out:
+            self.rosen_label.setText(rosen.format_details(rosen.parse_payload(out['op_return'])))
+            self.rosen_label.show()
+            self.payto_e.setFrozen(True)
+            self.lock_amount(True)
+            self.fiat_send_e.setFrozen(True)
 
 
     def do_clear(self):
         self.max_button.setChecked(False)
         self.payment_request = None
         self.payto_URI = None
+        self.rosen_label.clear()
+        self.rosen_label.hide()
+        self.fiat_send_e.setFrozen(False)
         self.payto_e.is_pr = False
         self.set_onchain(False)
         for e in [self.payto_e, self.message_e, self.amount_e]:
