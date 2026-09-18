@@ -18,7 +18,8 @@ export LIBSPARKMOBILE_CMAKE_EXTRA_ARGS="\
     -DCMAKE_RC_COMPILER=${GCC_TRIPLET_HOST}-windres \
     -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
     -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
-    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY"
+    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+    -DCMAKE_SHARED_LINKER_FLAGS=-lssp"
 ./contrib/make_libsparkmobile.sh || fail "Could not build libsparkmobile."
 
 DLL=electrum_dash/electrum_libsparkmobile.dll
