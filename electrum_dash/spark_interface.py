@@ -31,7 +31,6 @@ SPARK_OUT_LIMIT_PER_TX = 16
 OP_SPARKMINT = 0xd1
 OP_SPARKSMINT = 0xd2
 OP_SPARKSPEND = 0xd3
-# Sequence Firo Core assumes when it rebuilds a mint's serial context.
 MINT_INPUT_SEQUENCE = 0xffffffff - 1
 
 
@@ -587,7 +586,6 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         if not to_check:
             return []
         try:
-            # server expects hex txids in the request ...
             response = await self._large_request(
                 'spark.getmempoolsparktxs', ({'txids': to_check},))
         except Exception as e:
@@ -602,11 +600,9 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 continue
             context_b64 = serial_contexts[0]
             if txid_key in hex_to_b64:
-                # ... but keys its response by the hex txid we requested with
                 txid_hex = txid_key
                 txid_b64 = hex_to_b64[txid_key]
             elif txid_key in hex_to_b64.values():
-                # ... or by the base64 identifier from getmempoolsparktxids
                 txid_b64 = txid_key
                 txid_hex = self._decode_b64(txid_key)[::-1].hex()
             else:

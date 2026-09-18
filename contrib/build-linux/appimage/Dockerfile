@@ -63,9 +63,9 @@ ENV CMAKE_VERSION=3.27.9 \
 RUN wget -q https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz \
     && echo "${CMAKE_SHA256}  cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" > cmake.sha256 \
     && shasum -a256 -s -c cmake.sha256 \
-    && tar -xzf cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz -C /opt \
+    && tar -xzf cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz -C /usr/local \
     && rm cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz cmake.sha256
-ENV PATH="/opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin:${PATH}"
+ENV PATH="/usr/local/cmake-${CMAKE_VERSION}-linux-x86_64/bin:${PATH}"
 
 # note: compiling python 3.8.x requires at least glibc 2.27,
 #       which is first available on ubuntu 18.04

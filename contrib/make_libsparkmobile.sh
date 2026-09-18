@@ -69,7 +69,6 @@ fi
 
 info "Building electrum_libsparkmobile for $BUILD_FOR_SYSTEM_NAME (its CMake fetches and pins sparkmobile)..."
 
-# Reconfigure cleanly but keep FetchContent downloads (_deps) when present.
 mkdir -p "$BUILD_DIR"
 if [ -d "$BUILD_DIR/_deps" ]; then
     find "$BUILD_DIR" -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +

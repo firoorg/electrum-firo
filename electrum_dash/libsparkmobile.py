@@ -14,8 +14,6 @@ from .logging import get_logger
 _logger = get_logger(__name__)
 
 SPARK_KEY_INDEX = 1
-# Spends carry a 32-byte extension commitment. Plain spends commit to nothing
-# and pass zeros; a Spark Name spend passes its computed commitment.
 
 BIP44_SPARK_CHAIN = 6
 SPARK_CHANGE_DIVERSIFIER = 0x270F

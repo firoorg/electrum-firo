@@ -33,6 +33,15 @@ RUN dpkg --add-architecture i386 \
     && chmod +x winetricks && mv winetricks /usr/local/bin \
     && rm -rf /var/lib/apt/lists/*
 
+ENV CMAKE_VERSION=3.27.9 \
+    CMAKE_SHA256=72b01478eeb312bf1a0136208957784fe55a7b587f8d9f9142a7fc9b0b9e9a28
+
+RUN wget -q https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz \
+    && echo "${CMAKE_SHA256}  cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" | sha256sum -c - \
+    && tar -xzf cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz -C /usr/local \
+    && rm cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz
+ENV PATH="/usr/local/cmake-${CMAKE_VERSION}-linux-x86_64/bin:${PATH}"
+
 ENV WINEPATH c:/git/cmd;c:/Python38;c:/Python38/Scripts
 ENV WINEDEBUG -all
 ENV WINEPREFIX /root/.wine-32

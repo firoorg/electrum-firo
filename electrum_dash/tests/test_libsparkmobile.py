@@ -109,7 +109,6 @@ class TestLibsparkmobileAddresses(ElectrumTestCase):
     def test_own_address_is_valid(self):
         address = libsparkmobile.get_address(TEST_KEY, 1)
         self.assertTrue(libsparkmobile.is_valid_spark_address(address))
-        # ...and only on the network it was encoded for.
         self.assertFalse(
             libsparkmobile.is_valid_spark_address(address, is_testnet=True))
 
@@ -123,14 +122,10 @@ class TestLibsparkmobileAddresses(ElectrumTestCase):
                     address[:10] + address[11:], 's1' + address,
                     address[:20].upper() + address[20:]):
             self.assertFalse(libsparkmobile.is_valid_spark_address(bad), bad)
-        # An all-uppercase encoding is the same address (bech32 is
-        # case-insensitive as long as the case is not mixed).
         self.assertTrue(
             libsparkmobile.is_valid_spark_address(address.upper()))
 
     def test_full_view_key_roundtrip(self):
-        # Exercises the serialize/native_free ownership contract repeatedly:
-        # a mismatched allocator pair would corrupt the heap here.
         for _ in range(50):
             key_hex = libsparkmobile.get_full_view_key_hex(TEST_KEY)
             self.assertTrue(key_hex)
@@ -150,8 +145,6 @@ class TestLibsparkmobileAbiGuards(ElectrumTestCase):
 
     def test_hash_tags_requires_exact_tag_length(self):
         self.lib.hashTags.restype = c_void_p
-        # One byte of tag data, but three 34-byte tags declared: the old ABI
-        # read 101 bytes past the end of the buffer.
         buf = (c_ubyte * 1).from_buffer_copy(b'\x00')
         self.assertIsNone(self.lib.hashTags(buf, 1, 3))
         self.assertIsNone(self.lib.hashTags(buf, 1, 1))
@@ -164,8 +157,6 @@ class TestLibsparkmobileAbiGuards(ElectrumTestCase):
         self.assertEqual([], libsparkmobile.hash_tags([]))
 
     def test_hash_tag_survives_malformed_coordinates(self):
-        # A malformed coordinate used to raise std::invalid_argument through
-        # extern "C", which terminates the process.
         self.lib.hashTag.argtypes = [c_char_p, c_char_p]
         self.lib.hashTag.restype = c_void_p
         self.assertIsNone(self.lib.hashTag(b'zzzz', b'zzzz'))
@@ -186,7 +177,6 @@ class TestLibsparkmobileAbiGuards(ElectrumTestCase):
         first = libsparkmobile.serialize_mint_context([(txid, 0)])
         second = libsparkmobile.serialize_mint_context([(txid, 0)])
         self.assertEqual(first, second)
-        # Input order is part of the context; it must not be ignored.
         other = libsparkmobile.serialize_mint_context(
             [(txid, 0), (bytes(32), 1)])
         reordered = libsparkmobile.serialize_mint_context(
@@ -268,7 +258,6 @@ class TestSpendV2AndNumericGuards(ElectrumTestCase):
     """Post-H2 contract: V2 only, 32-byte commitment, sane amounts."""
 
     def test_negative_fee_estimate_is_rejected(self):
-        # Used to return a successful estimate for a negative amount.
         for amount in (-1, 21_000_001 * 100_000_000):
             with self.assertRaises(RuntimeError):
                 libsparkmobile.estimate_spark_fee(
@@ -292,9 +281,6 @@ class TestSpendV2AndNumericGuards(ElectrumTestCase):
         self.assertFalse(libsparkmobile._require().serializeMintContext(arr, 1))
 
     def test_oversized_coin_blobs_are_rejected(self):
-        # Guards against allocation amplification from a huge blob. The decoder
-        # deliberately tolerates the trailing bytes the server appends after a
-        # coin, so only the total size is bounded here.
         view_key = libsparkmobile.create_full_view_key(TEST_KEY)
         try:
             self.assertIsNone(libsparkmobile.identify_and_recover_coin(

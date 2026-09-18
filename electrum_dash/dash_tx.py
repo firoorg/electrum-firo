@@ -878,8 +878,6 @@ SPEC_CB_TX = 5
 LELANTUS_JSPLIT = 8
 SPARK_SPEND = 9
 SPARK_SPEND_V2 = 11
-# Both carry a Spark spend; only V2 may hold more than one input, and it is the
-# only format this wallet creates after the H2 fork.
 SPARK_SPEND_TYPES = (SPARK_SPEND, SPARK_SPEND_V2)
 OP_SPARKMINT = 0xd1
 OP_SPARKSPEND = 0xd3
