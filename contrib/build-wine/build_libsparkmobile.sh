@@ -19,7 +19,8 @@ export LIBSPARKMOBILE_CMAKE_EXTRA_ARGS="\
     -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
     -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
     -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-    -DCMAKE_SHARED_LINKER_FLAGS=-lssp"
+    -DCMAKE_C_STANDARD_LIBRARIES=-lssp \
+    -DCMAKE_CXX_STANDARD_LIBRARIES=-lssp"
 ./contrib/make_libsparkmobile.sh || fail "Could not build libsparkmobile."
 
 DLL=electrum_dash/electrum_libsparkmobile.dll
