@@ -64,6 +64,7 @@ fi
 if [[ -n $GITHUB_REF ]]; then
     echo "Building libsparkmobile dylib..."
     rm -f electrum_dash/libelectrum_libsparkmobile.dylib
+    export LIBSPARKMOBILE_CMAKE_EXTRA_ARGS="-DCMAKE_OSX_ARCHITECTURES=x86_64"
     ./contrib/make_libsparkmobile.sh
     rm -rf electrum_libsparkmobile/
 fi
