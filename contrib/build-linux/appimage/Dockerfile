@@ -47,10 +47,25 @@ RUN apt-get update -q && \
         libx11-xcb1=2:1.6.3-1ubuntu2.2 \
         libc6-dev=2.23-0ubuntu11.3 \
         libgmp-dev \
+        build-essential \
+        software-properties-common \
         && \
+    add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
+    apt-get update -q && \
+    apt-get install -qy g++-9 && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get autoremove -y && \
     apt-get clean
+
+ENV CMAKE_VERSION=3.27.9 \
+    CMAKE_SHA256=72b01478eeb312bf1a0136208957784fe55a7b587f8d9f9142a7fc9b0b9e9a28
+
+RUN wget -q https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz \
+    && echo "${CMAKE_SHA256}  cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" > cmake.sha256 \
+    && shasum -a256 -s -c cmake.sha256 \
+    && tar -xzf cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz -C /opt \
+    && rm cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz cmake.sha256
+ENV PATH="/opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin:${PATH}"
 
 # note: compiling python 3.8.x requires at least glibc 2.27,
 #       which is first available on ubuntu 18.04

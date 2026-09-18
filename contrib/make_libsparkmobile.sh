@@ -58,12 +58,14 @@ if [ ! -d "$SRC_DIR" ]; then
     fail "Fetched electrum_libsparkmobile has no src/ directory ($SRC_DIR)"
 fi
 
-case "$(uname -s)" in
-    Darwin*) BUILD_FOR_SYSTEM_NAME="macos" ;;
-    Linux*)  BUILD_FOR_SYSTEM_NAME="linux" ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT) BUILD_FOR_SYSTEM_NAME="windows" ;;
-    *) fail "Unsupported host: $(uname -s)" ;;
-esac
+if [ -z "$BUILD_FOR_SYSTEM_NAME" ]; then
+    case "$(uname -s)" in
+        Darwin*) BUILD_FOR_SYSTEM_NAME="macos" ;;
+        Linux*)  BUILD_FOR_SYSTEM_NAME="linux" ;;
+        MINGW*|MSYS*|CYGWIN*|Windows_NT) BUILD_FOR_SYSTEM_NAME="windows" ;;
+        *) fail "Unsupported host: $(uname -s)" ;;
+    esac
+fi
 
 info "Building electrum_libsparkmobile for $BUILD_FOR_SYSTEM_NAME (its CMake fetches and pins sparkmobile)..."
 
@@ -77,7 +79,9 @@ else
 fi
 (
     cd "$BUILD_DIR"
-    cmake "$SRC_DIR" -DBUILD_FOR_SYSTEM_NAME="$BUILD_FOR_SYSTEM_NAME"
+    cmake "$SRC_DIR" -DBUILD_FOR_SYSTEM_NAME="$BUILD_FOR_SYSTEM_NAME" \
+        -DCMAKE_CXX_STANDARD=17 \
+        ${LIBSPARKMOBILE_CMAKE_EXTRA_ARGS}
     cmake --build . --config Release -j4
 )
 
