@@ -34,6 +34,7 @@ from electrum_firo.plugin import run_hook
 from electrum_firo.transaction import Transaction, PartialTransaction
 from electrum_firo.simple_config import FEERATE_WARNING_HIGH_FEE, FEE_RATIO_HIGH_WARNING
 from electrum_firo.wallet import InternalAddressCorruption
+from electrum_firo.dash_tx import SPARK_SPEND_TYPES
 
 from .util import (WindowModalDialog, ColorScheme, HelpLabel, Buttons, CancelButton,
                    WaitingDialog, PasswordLineEdit)
@@ -230,7 +231,9 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
         tx = self.tx
         if self.output_value == '!':
             if tx:
-                amount = tx.output_value()
+                amount = getattr(tx, '_spark_send_amount', None)
+                if amount is None:
+                    amount = tx.output_value()
                 amount_str = self.main_window.format_amount_and_units(amount)
             else:
                 amount_str = "max"
@@ -260,7 +263,9 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
         self.pw_label.setVisible(self.password_required)
         self.pw.setVisible(self.password_required)
 
-        fee = tx.get_fee()
+        fee = getattr(tx, '_spark_fee', None)
+        if fee is None:
+            fee = tx.get_fee()
         assert fee is not None
         self.fee_label.setText(self.main_window.format_amount_and_units(fee))
         x_fee = run_hook('get_tx_extra_fee', self.wallet, tx)
@@ -270,7 +275,16 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
             self.extra_fee_value.setVisible(True)
             self.extra_fee_value.setText(self.main_window.format_amount_and_units(x_fee_amount))
 
-        amount = tx.output_value() if self.output_value == '!' else self.output_value
+        if self.output_value == '!':
+            amount = getattr(tx, '_spark_send_amount', None)
+            if amount is None:
+                amount = tx.output_value()
+        else:
+            amount = self.output_value
+        if (getattr(tx, '_spark_fee', None) is not None
+                and getattr(tx, 'tx_type', None) in SPARK_SPEND_TYPES):
+            self.toggle_send_button(True)
+            return
         tx_size = tx.estimated_size()
         fee_warning_tuple = self.wallet.get_tx_fee_warning(
             invoice_amt=amount, tx_size=tx_size, fee=fee)

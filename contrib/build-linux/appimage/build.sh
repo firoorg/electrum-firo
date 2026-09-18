@@ -89,6 +89,12 @@ info "installing electrum and its dependencies."
 "$python" -m pip uninstall -y Cython
 
 
+info "building libsparkmobile."
+CC=gcc-9 CXX=g++-9 "$PROJECT_ROOT/contrib/make_libsparkmobile.sh"
+cp "$PROJECT_ROOT/electrum_dash/libelectrum_libsparkmobile.so" "$APPDIR/usr/lib/libelectrum_libsparkmobile.so"
+rm -rf "$PROJECT_ROOT/electrum_libsparkmobile"
+
+
 info "copying zbar"
 cp "/usr/lib/x86_64-linux-gnu/libzbar.so.0" "$APPDIR/usr/lib/libzbar.so.0"
 

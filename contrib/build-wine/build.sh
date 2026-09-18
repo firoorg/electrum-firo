@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -ev
+
 source ./contrib/dash/travis/electrum_dash_version_env.sh;
 echo wine build version is $DASH_ELECTRUM_VERSION
 
@@ -16,6 +18,7 @@ fi
 export host_strip="${GCC_TRIPLET_HOST}-strip"
 
 ./contrib/build-wine/build_secp256k1.sh
+./contrib/build-wine/build_libsparkmobile.sh
 ./contrib/build-wine/build_x11_hash.sh
 ./contrib/build-wine/build_pyinstaller.sh
 
