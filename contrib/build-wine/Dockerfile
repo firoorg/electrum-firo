@@ -13,6 +13,7 @@ RUN dpkg --add-architecture i386 \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         wget git binutils-mingw-w64 gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 \
+        g++-mingw-w64-i686 g++-mingw-w64-x86-64 \
         win-iconv-mingw-w64-dev \
         build-essential libtool autoconf automake \
         gnupg2 \

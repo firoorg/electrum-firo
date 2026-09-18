@@ -7,6 +7,7 @@ export PROJ_ROOT=$WINEPREFIX/drive_c/electrum-dash
 export DIST_DIR=$WINEPREFIX/drive_c/libsparkmobile
 
 cd $PROJ_ROOT
+source ./contrib/build_tools_util.sh
 rm -f electrum_dash/electrum_libsparkmobile.dll electrum_dash/libelectrum_libsparkmobile.dll
 
 export BUILD_FOR_SYSTEM_NAME=windows
