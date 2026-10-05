@@ -890,6 +890,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
         wallet_menu.addSeparator()
         wallet_menu.addAction(_("Find"), self.toggle_search).setShortcut(QKeySequence("Ctrl+F"))
+        self.spark_rescan_menu = wallet_menu.addAction(_("Rescan Spark"), self.rescan_spark)
+        self.spark_rescan_menu.setVisible(False)
 
         def add_toggle_action(view_menu, tab):
             is_shown = self.config.get('show_{}_tab'.format(tab.tab_name), False)
@@ -1423,10 +1425,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
     def init_spark_session(self):
         from electrum_firo import libsparkmobile
-        ks = self.wallet.get_keystore()
-        if (not libsparkmobile.is_available() or not ks
-                or ks.is_watching_only()
-                or not hasattr(ks, 'get_private_key')):
+        if (not libsparkmobile.is_available()
+                or not self.wallet.can_use_spark()):
             return
 
         encrypted = self.wallet.has_keystore_encryption()
@@ -1449,8 +1449,20 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                     return
 
         self.receive_spark_cb.setVisible(True)
+        self.spark_rescan_menu.setVisible(True)
         self.update_send_mode_balance()
         self.payto_e.check_text()
+        self.update_status()
+
+    def rescan_spark(self):
+        if not self.wallet.spark_enabled or not self.wallet.spark_synchronizer:
+            return
+        if not self.question(_(
+                'Rescan Spark?') + '\n\n' + _(
+                'The Spark anonymity sets will be downloaded again and your '
+                'Spark coins found again from scratch. This can take a while.')):
+            return
+        self.wallet.spark_synchronizer.trigger_recover()
         self.update_status()
 
     def toggle_send_balance_mode(self):
@@ -2288,12 +2300,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         conf_dlg = ConfirmTxDialog(
             window=self, make_tx=make_tx, output_value=amount,
             is_sweep=False, is_ps_tx=False)
-        if conf_dlg.password_required:
-            conf_dlg.pw.setText(self.wallet.spark_password)
-            conf_dlg.password_required = False
-            conf_dlg.pw_label.setVisible(False)
-            conf_dlg.pw.setVisible(False)
-            conf_dlg.preview_button.setVisible(False)
+        conf_dlg.disable_preview = True
+        conf_dlg.preview_button.setVisible(False)
         conf_dlg.bg_update(
             lambda x: self._conf_dlg_after_bg_update(conf_dlg, None))
 
@@ -2307,24 +2315,35 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.show_error(_('Spark library is not available.\n'
                               'Build it with: ./contrib/make_libsparkmobile.sh'))
             return
+        password = None
+        if self.wallet.has_keystore_encryption():
+            password = self.password_dialog(
+                _('Enter your password to send from your Spark balance'))
+            if password is None:
+                return
+            try:
+                self.wallet.check_password(password)
+            except Exception as e:
+                self.show_error(str(e))
+                return
 
         def make_tx(fee_est):
             return self.wallet.prepareSendSpark(
                 address=address,
                 amount=amount,
-                memo=memo)
+                memo=memo,
+                password=password)
 
         conf_dlg = ConfirmTxDialog(
             window=self, make_tx=make_tx, output_value=amount,
             is_sweep=False, is_ps_tx=False)
         conf_dlg.fee_slider.setEnabled(False)
         conf_dlg.fee_combo.setEnabled(False)
-        if conf_dlg.password_required:
-            conf_dlg.pw.setText(self.wallet.spark_password or '')
-            conf_dlg.password_required = False
-            conf_dlg.pw_label.setVisible(False)
-            conf_dlg.pw.setVisible(False)
-            conf_dlg.preview_button.setVisible(False)
+        conf_dlg.password_required = False
+        conf_dlg.pw_label.setVisible(False)
+        conf_dlg.pw.setVisible(False)
+        conf_dlg.disable_preview = True
+        conf_dlg.preview_button.setVisible(False)
         conf_dlg.bg_update(
             lambda x: self._conf_dlg_after_bg_update(conf_dlg, None))
 
@@ -2349,7 +2368,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
     def _conf_dlg_or_preview_dlg(self, conf_dlg, external_keypairs):
         # shortcut to advanced preview (after "enough funds" check!)
-        if self.config.get('advanced_preview'):
+        if (self.config.get('advanced_preview')
+                and not getattr(conf_dlg, 'disable_preview', False)):
             preview_dlg = PreviewTxDialog(
                 window=self,
                 make_tx=conf_dlg.make_tx,
@@ -2377,15 +2397,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 if not success:
                     return
                 if sparkMints:
-                    try:
-                        self.wallet.confirmSparkMintTransactions(
-                            sparkMints, password)
-                    except Exception as e:
-                        self.show_error(str(e))
-                        return
-                self.broadcast_or_show(tx, pr)
-                for extra in sparkMints:
-                    self.broadcast_or_show(extra, None)
+                    self.broadcast_spark_mints([tx] + sparkMints, password)
+                else:
+                    self.broadcast_or_show(tx, pr)
 
             self.sign_tx_with_password(tx, callback=sign_done, password=password,
                                        external_keypairs=external_keypairs)
@@ -2545,6 +2559,44 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 else:
                     msg = msg or ''
                     parent.show_error(msg)
+
+        WaitingDialog(self, _('Broadcasting transaction...'),
+                      broadcast_thread, broadcast_done, self.on_error)
+
+    def broadcast_spark_mints(self, txs: List[PartialTransaction], password):
+        if not self.network:
+            self.show_error(_("You can't broadcast a transaction without a live network connection."))
+            return
+
+        def broadcast_thread():
+            self.wallet.confirmSparkMintTransactions(txs[1:], password)
+            sent = []
+            for tx in txs:
+                if not tx.is_complete():
+                    return sent, _('Transaction is not fully signed') + f': {tx.txid()}'
+                try:
+                    coro = self.wallet.psman.broadcast_transaction(tx)
+                    self.network.run_from_another_thread(coro)
+                except TxBroadcastError as e:
+                    return sent, e.get_message_for_gui()
+                except BestEffortRequestFailed as e:
+                    return sent, repr(e)
+                sent.append(tx.txid())
+            return sent, None
+
+        parent = self.top_level_window(lambda win: isinstance(win, MessageBoxMixin))
+
+        def broadcast_done(result):
+            sent, error = result
+            self.invoice_list.update()
+            self.need_update.set()
+            if error is None:
+                parent.show_message(_('Payment sent.') + '\n' + '\n'.join(sent))
+                return
+            msg = _('Sent {} of {} Spark mint transactions.').format(len(sent), len(txs))
+            if sent:
+                msg += '\n' + '\n'.join(sent)
+            parent.show_error(msg + '\n\n' + error)
 
         WaitingDialog(self, _('Broadcasting transaction...'),
                       broadcast_thread, broadcast_done, self.on_error)

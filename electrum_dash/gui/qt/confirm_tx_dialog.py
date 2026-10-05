@@ -34,7 +34,6 @@ from electrum_firo.plugin import run_hook
 from electrum_firo.transaction import Transaction, PartialTransaction
 from electrum_firo.simple_config import FEERATE_WARNING_HIGH_FEE, FEE_RATIO_HIGH_WARNING
 from electrum_firo.wallet import InternalAddressCorruption
-from electrum_firo.dash_tx import SPARK_SPEND_TYPES
 
 from .util import (WindowModalDialog, ColorScheme, HelpLabel, Buttons, CancelButton,
                    WaitingDialog, PasswordLineEdit)
@@ -281,10 +280,6 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
                 amount = tx.output_value()
         else:
             amount = self.output_value
-        if (getattr(tx, '_spark_fee', None) is not None
-                and getattr(tx, 'tx_type', None) in SPARK_SPEND_TYPES):
-            self.toggle_send_button(True)
-            return
         tx_size = tx.estimated_size()
         fee_warning_tuple = self.wallet.get_tx_fee_warning(
             invoice_amt=amount, tx_size=tx_size, fee=fee)

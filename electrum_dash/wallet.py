@@ -260,8 +260,6 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
         self.db = db
         self.storage = storage
         self.spark_enabled = False
-        self.spark_password = None
-        self.spark_key_data = None
         self.spark_view_key_hex = None
         self._current_spark_address = None
         self._spark_change_address = None
@@ -916,15 +914,102 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
             self._maybe_set_tx_label_based_on_invoices(tx)
         return tx_was_added
 
+    def get_spark_aware_history(self, *, domain=None, group_ps=False) -> List[dict]:
+        items = OrderedDictWithIndex()
+        for tx_item in self.get_onchain_history(domain=domain, group_ps=group_ps):
+            tx_item['_spark_delta'] = 0
+            items[tx_item['txid']] = tx_item
+        if self.spark_enabled:
+            self._add_spark_history_items(items)
+        out = sorted(
+            items.values(),
+            key=lambda x: x.get('monotonic_timestamp') or x.get('timestamp') or float('inf'))
+        transparent_balance = 0
+        spark_balance = 0
+        for item in out:
+            spark_balance += item.pop('_spark_delta')
+            if not item.pop('_spark_only', False):
+                transparent_balance = item['bc_balance'].value
+            item['bc_balance'] = Satoshis(transparent_balance + spark_balance)
+        return out
+
+    def _add_spark_history_items(self, items: dict) -> None:
+        spark_coins = self.db.get('spark_coins', {}) or {}
+        spark_txs = defaultdict(int)
+        spark_meta = {}
+        for coin in spark_coins.values():
+            spark_txs[coin['txid']] += int(coin['value'])
+            spark_meta[coin['txid']] = coin
+        spark_spends = defaultdict(int)
+        for coin in spark_coins.values():
+            if not coin.get('is_used'):
+                continue
+            spent_txid = coin.get('spent_txid')
+            if spent_txid:
+                spark_spends[spent_txid] += int(coin['value'])
+
+        def add_to_entry(entry, spark_value):
+            combined_value = entry['bc_value'].value + spark_value
+            entry['bc_value'] = Satoshis(combined_value)
+            entry['incoming'] = combined_value >= 0
+            entry['_spark_delta'] += spark_value
+
+        def spark_only_entry(txid, value, tx_type, mined):
+            timestamp = mined.timestamp
+            return {
+                'txid': txid, 'fee_sat': None, 'height': mined.height,
+                'confirmations': mined.conf,
+                'timestamp': timestamp, 'monotonic_timestamp': timestamp,
+                'incoming': value >= 0, 'bc_value': Satoshis(value),
+                'bc_balance': Satoshis(0),
+                'date': timestamp_to_datetime(timestamp) if timestamp else None,
+                'label': self.get_label_for_txid(txid),
+                'txpos_in_block': mined.txpos, 'islock': None,
+                'tx_type': tx_type,
+                'group_txid': None, 'group_data': [],
+                '_spark_delta': value, '_spark_only': True,
+            }
+
+        for txid, spent_value in spark_spends.items():
+            if not self.db.get_transaction(txid):
+                continue
+            mined = self.spark_spend_mined_info(txid)
+            net_value = spark_txs.pop(txid, 0) - spent_value
+            if txid in items:
+                entry = items[txid]
+                entry['tx_type'] = SPARK_SPEND
+                entry['height'] = mined.height
+                entry['confirmations'] = mined.conf
+                entry['timestamp'] = mined.timestamp
+                entry['txpos_in_block'] = mined.txpos
+                if mined.timestamp:
+                    entry['monotonic_timestamp'] = mined.timestamp
+                    entry['date'] = timestamp_to_datetime(mined.timestamp)
+                add_to_entry(entry, net_value)
+                continue
+            items[txid] = spark_only_entry(txid, net_value, SPARK_SPEND, mined)
+        for txid, value in spark_txs.items():
+            if txid in items:
+                add_to_entry(items[txid], value)
+                continue
+            coin = spark_meta[txid]
+            tx_type = classify_onchain_tx_type(self.db.get_transaction(txid))
+            if not SPEC_TX_NAMES.get(tx_type):
+                tx_type = PSTxTypes.SPARK_MINT
+            height = coin.get('height') or 0
+            confirmations = (max(self.get_local_height() - height + 1, 0)
+                             if height > 0 else 0)
+            mined = TxMinedInfo(height=height, conf=confirmations,
+                                timestamp=coin.get('timestamp'), txpos=None)
+            items[txid] = spark_only_entry(txid, value, tx_type, mined)
+
     @profiler
     def get_full_history(self, fx=None, *, onchain_domain=None, group_ps=False):
-        transactions_tmp = OrderedDictWithIndex()
-        # add on-chain txns
-        onchain_history = self.get_onchain_history(domain=onchain_domain,
-                                                   group_ps=group_ps)
+        transactions = OrderedDictWithIndex()
         def_dip2 = not self.psman.unsupported
         show_dip2 = self.config.get('show_dip2_tx_type', def_dip2)
-        for tx_item in onchain_history:
+        for tx_item in self.get_spark_aware_history(domain=onchain_domain,
+                                                    group_ps=group_ps):
             timestamp = tx_item['timestamp']
             islock = tx_item['islock']
             txid = tx_item['txid']
@@ -932,9 +1017,6 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
                 tx_item['timestamp'] = islock
             if show_dip2:
                 tx_type = tx_item['tx_type']
-                stored_tx = self.db.get_transaction(txid)
-                if stored_tx:
-                    tx_type = classify_onchain_tx_type(stored_tx)
                 tx_type_name = SPEC_TX_NAMES.get(tx_type, str(tx_type))
                 tx_item['tx_type'] = tx_type_name
             else:
@@ -946,88 +1028,7 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
                 group_balance_sat = Satoshis(group_balance)
                 group_data = (group_delta_sat, group_balance_sat, group_txids)
                 tx_item['group_data'] = group_data
-            transactions_tmp[txid] = tx_item
-        if self.spark_enabled:
-            spark_txs = defaultdict(int)
-            spark_meta = {}
-            for coin in self.db.get('spark_coins', {}).values():
-                spark_txs[coin['txid']] += int(coin['value'])
-                spark_meta[coin['txid']] = coin
-            spark_spends = defaultdict(int)
-            for coin in self.db.get('spark_coins', {}).values():
-                if not coin.get('is_used'):
-                    continue
-                spent_txid = coin.get('spent_txid')
-                if spent_txid:
-                    spark_spends[spent_txid] += int(coin['value'])
-            for txid, spent_value in spark_spends.items():
-                if not self.db.get_transaction(txid):
-                    continue
-                mined = self.spark_spend_mined_info(txid)
-                received_value = spark_txs.pop(txid, 0)
-                net_value = received_value - spent_value
-                if txid in transactions_tmp:
-                    entry = transactions_tmp[txid]
-                    entry['tx_type'] = SPEC_TX_NAMES[SPARK_SPEND]
-                    entry['height'] = mined.height
-                    entry['confirmations'] = mined.conf
-                    entry['timestamp'] = mined.timestamp
-                    entry['txpos_in_block'] = mined.txpos
-                    if mined.timestamp:
-                        entry['monotonic_timestamp'] = mined.timestamp
-                        entry['date'] = timestamp_to_datetime(mined.timestamp)
-                    combined_value = entry['bc_value'].value + net_value
-                    entry['bc_value'] = Satoshis(combined_value)
-                    entry['incoming'] = combined_value >= 0
-                    continue
-                height = mined.height
-                timestamp = mined.timestamp
-                transactions_tmp[txid] = {
-                    'txid': txid, 'fee_sat': None, 'height': height,
-                    'confirmations': mined.conf,
-                    'timestamp': timestamp, 'monotonic_timestamp': timestamp,
-                    'incoming': net_value >= 0, 'bc_value': Satoshis(net_value),
-                    'bc_balance': Satoshis(0),
-                    'date': timestamp_to_datetime(timestamp) if timestamp else None,
-                    'label': self.get_label_for_txid(txid),
-                    'txpos_in_block': mined.txpos, 'islock': None,
-                    'tx_type': SPEC_TX_NAMES[SPARK_SPEND],
-                    'group_txid': None, 'group_data': [],
-                }
-            for txid, value in spark_txs.items():
-                if txid in transactions_tmp:
-                    continue
-                coin = spark_meta[txid]
-                stored_tx = self.db.get_transaction(txid)
-                if stored_tx:
-                    tx_type = classify_onchain_tx_type(stored_tx)
-                    tx_type_name = SPEC_TX_NAMES.get(tx_type, '')
-                else:
-                    tx_type_name = ''
-                if not tx_type_name:
-                    tx_type_name = SPEC_TX_NAMES[PSTxTypes.SPARK_MINT]
-                height = coin.get('height') or 0
-                timestamp = coin.get('timestamp')
-                confirmations = (max(self.get_local_height() - height + 1, 0)
-                                 if height > 0 else 0)
-                transactions_tmp[txid] = {
-                    'txid': txid, 'fee_sat': None, 'height': height,
-                    'confirmations': confirmations,
-                    'timestamp': timestamp, 'monotonic_timestamp': timestamp,
-                    'incoming': True, 'bc_value': Satoshis(value),
-                    'bc_balance': Satoshis(0),
-                    'date': timestamp_to_datetime(timestamp) if timestamp else None,
-                    'label': self.get_label_for_txid(txid),
-                    'txpos_in_block': None, 'islock': None,
-                    'tx_type': tx_type_name,
-                    'group_txid': None, 'group_data': [],
-                }
-        # sort on-chain stuff into new dict, by timestamp
-        # (we rely on this being a *stable* sort)
-        transactions = OrderedDictWithIndex()
-        for k, v in sorted(list(transactions_tmp.items()),
-                           key=lambda x: x[1].get('monotonic_timestamp') or x[1].get('timestamp') or float('inf')):
-            transactions[k] = v
+            transactions[txid] = tx_item
         balance = 0
         for item in transactions.values():
             # add on-chain values
@@ -1070,7 +1071,7 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
         now = time.time()
         def_dip2 = not self.psman.unsupported
         show_dip2 = self.config.get('show_dip2_tx_type', def_dip2)
-        for item in self.get_onchain_history(group_ps=group_ps):
+        for item in self.get_spark_aware_history(group_ps=group_ps):
             timestamp = item['timestamp']
             islock = item['islock']
             if not timestamp and islock:
@@ -1099,7 +1100,7 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
             tx = self.db.get_transaction(tx_hash)
             tx_fee = item['fee_sat']
             item['fee'] = Satoshis(tx_fee) if tx_fee is not None else None
-            if show_addresses:
+            if show_addresses and tx:
                 item['inputs'] = list(map(lambda x: x.to_json(), tx.inputs()))
                 item['outputs'] = list(map(lambda x: {'address': x.get_ui_address_str(), 'value': Satoshis(x.value)},
                                            tx.outputs()))
@@ -1480,24 +1481,29 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
             self.sign_transaction(tx, password)
         return tx
 
-    def enable_spark(self, password) -> None:
-        self.check_password(password)
-        ks = self.get_keystore()
-        if not ks or not hasattr(ks, 'get_private_key'):
+    def can_use_spark(self) -> bool:
+        return False
+
+    def derive_spark_key(self, password) -> bytes:
+        if not self.can_use_spark():
             raise RuntimeError(_('This wallet does not support Spark'))
+        self.check_password(password)
         from .libsparkmobile import BIP44_SPARK_CHAIN, SPARK_KEY_INDEX
-        self.spark_key_data = ks.get_private_key(
+        return self.keystore.get_private_key(
             [BIP44_SPARK_CHAIN, SPARK_KEY_INDEX], password)[0]
-        self.spark_password = password
+
+    def enable_spark(self, password) -> None:
+        key_data = self.derive_spark_key(password)
+        try:
+            self._init_spark_session(key_data)
+        finally:
+            del key_data
         self.spark_enabled = True
-        self._init_spark_session()
         if self.spark_synchronizer:
             self.spark_synchronizer.trigger()
 
     def disable_spark(self) -> None:
         self.spark_enabled = False
-        self.spark_password = None
-        self.spark_key_data = None
         self.spark_view_key_hex = None
         self._current_spark_address = None
         self._spark_change_address = None
@@ -1511,6 +1517,7 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
         state.pop('groups', None)
         state.pop('used_tags_count', None)
         state.pop('chain_height', None)
+        state.pop('chain_tip_hash', None)
         self.db.put('spark_scan_state', state)
         if is_rescan:
             self.db.put('spark_coins', {})
@@ -1557,6 +1564,23 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
         if changed:
             self.db.put('spark_coins', coins)
             self.save_db()
+
+    def release_spark_reservation(self, spent_txid: str) -> None:
+        coins = json.loads(json.dumps(self.db.get('spark_coins', {}) or {}))
+        for tag, coin in coins.items():
+            if coin.get('spent_txid') == spent_txid:
+                coin['is_used'] = False
+                coin.pop('spent_txid', None)
+        self.db.put('spark_coins', coins)
+        state = json.loads(json.dumps(self.db.get('spark_scan_state', {}) or {}))
+        state['pending_spark_spends'] = [
+            txid for txid in (state.get('pending_spark_spends') or [])
+            if txid != spent_txid]
+        self.db.put('spark_scan_state', state)
+        self.remove_unverified_tx(spent_txid, TX_HEIGHT_UNCONFIRMED)
+        if self.db.get_transaction(spent_txid) and self.is_local_tx(spent_txid):
+            self.remove_transaction(spent_txid)
+        self.save_db()
 
     def is_frozen_address(self, addr: str) -> bool:
         return addr in self._frozen_addresses
@@ -2912,6 +2936,11 @@ class Simple_Deterministic_Wallet(Simple_Wallet, Deterministic_Wallet):
 
 class Standard_Wallet(Simple_Deterministic_Wallet):
     wallet_type = 'standard'
+
+    def can_use_spark(self) -> bool:
+        ks = self.keystore
+        return (isinstance(ks, keystore.BIP32_KeyStore)
+                and not ks.is_watching_only())
 
     def pubkeys_to_address(self, pubkeys):
         pubkey = pubkeys[0]

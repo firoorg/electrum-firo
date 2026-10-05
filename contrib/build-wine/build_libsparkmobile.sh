@@ -21,11 +21,17 @@ export LIBSPARKMOBILE_CMAKE_EXTRA_ARGS="\
     -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
     -DCMAKE_C_STANDARD_LIBRARIES=-lssp \
     -DCMAKE_CXX_STANDARD_LIBRARIES=-lssp"
+export LDFLAGS="-static -static-libgcc -static-libstdc++"
 ./contrib/make_libsparkmobile.sh || fail "Could not build libsparkmobile."
 
 DLL=electrum_dash/electrum_libsparkmobile.dll
 [ -f "$DLL" ] || DLL=electrum_dash/libelectrum_libsparkmobile.dll
 [ -f "$DLL" ] || fail "libsparkmobile dll not found after build."
+
+${GCC_TRIPLET_HOST}-objdump -p "$DLL" | grep "DLL Name"
+if ${GCC_TRIPLET_HOST}-objdump -p "$DLL" | grep -Ei "DLL Name: (libstdc\+\+|libgcc|libssp|libwinpthread)"; then
+    fail "libsparkmobile dll depends on mingw runtime dlls that are not bundled."
+fi
 
 $host_strip "$DLL" || true
 mkdir -p $DIST_DIR

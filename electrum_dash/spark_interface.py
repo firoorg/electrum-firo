@@ -1,18 +1,19 @@
 import asyncio
 import base64
-import contextlib
 import json
 import os
 import random
 import threading
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
-from aiorpcx import run_in_thread
+from aiorpcx import RPCError, run_in_thread
 
 from . import constants, libsparkmobile, util
-from .bitcoin import COIN, is_address
+from .bitcoin import COIN, b58_address_to_hash160, is_address
+from .blockchain import hash_header
 from .crypto import sha256d
 from .dash_tx import SPARK_SPEND_V2, FiroSparkSpend
+from .interface import GracefulDisconnect
 from .i18n import _
 from .logging import get_logger
 from .simple_config import SimpleConfig
@@ -32,6 +33,48 @@ OP_SPARKMINT = 0xd1
 OP_SPARKSMINT = 0xd2
 OP_SPARKSPEND = 0xd3
 MINT_INPUT_SEQUENCE = 0xffffffff - 1
+SPEND_MISSING_CHECKS_BEFORE_RELEASE = 3
+MAX_SPARK_SET_SIZE = 32_768
+MAX_SPARK_GROUP_ID = 100_000
+MAX_SPARK_GROUPS_PER_REFRESH = 4
+SPARK_COIN_CHECK_VERSION = 2
+
+
+class SparkServerMisbehaving(GracefulDisconnect):
+    pass
+
+
+def _is_set_row(row) -> bool:
+    return (isinstance(row, (list, tuple)) and len(row) == 3
+            and all(isinstance(x, str) for x in row))
+
+
+def _parse_group_id(value) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise SparkServerMisbehaving(f'bad spark group id {value!r}')
+    try:
+        group_id = int(value)
+    except ValueError:
+        raise SparkServerMisbehaving(f'bad spark group id {value!r}')
+    if not 1 <= group_id <= MAX_SPARK_GROUP_ID:
+        raise SparkServerMisbehaving(f'spark group id out of range: {group_id}')
+    return group_id
+
+
+def _parse_set_meta(meta) -> Tuple[str, str, int]:
+    if not isinstance(meta, dict):
+        raise SparkServerMisbehaving(f'bad spark set meta {meta!r}')
+    block_hash, set_hash, size = (
+        meta.get('blockHash'), meta.get('setHash'), meta.get('size'))
+    if not isinstance(block_hash, str) or not isinstance(set_hash, str):
+        raise SparkServerMisbehaving(f'bad spark set meta {meta!r}')
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        raise SparkServerMisbehaving(f'bad spark set size {size!r}')
+    if not 0 <= size <= MAX_SPARK_SET_SIZE:
+        raise SparkServerMisbehaving(f'spark set size out of range: {size}')
+    return block_hash, set_hash, size
 
 
 def _deepcopy_db_val(val):
@@ -66,6 +109,61 @@ class MutableSparkRecipient:
     def __repr__(self):
         return (f'MutableSparkRecipient{{ address: {self.address}, '
                 f'value: {self.value}, memo: {self.memo} }}')
+
+
+SPARK_GROUP_ELEMENT_SIZE = 34
+
+
+def _read_compact_size(data: bytes, pos: int) -> Tuple[int, int]:
+    first = data[pos]
+    pos += 1
+    if first < 253:
+        return first, pos
+    width = {253: 2, 254: 4, 255: 8}[first]
+    if len(data) - pos < width:
+        raise ValueError('truncated compact size')
+    return int.from_bytes(data[pos:pos + width], 'little'), pos + width
+
+
+def _canonical_spark_coin(serialized: bytes) -> bytes:
+    pos = 1 + 3 * SPARK_GROUP_ELEMENT_SIZE
+    if not serialized or len(serialized) < pos:
+        raise ValueError('truncated spark coin')
+    for _field in range(3):
+        size, pos = _read_compact_size(serialized, pos)
+        pos += size
+    if serialized[0] == 0:
+        pos += 8
+    if pos > len(serialized):
+        raise ValueError('truncated spark coin')
+    return serialized[:pos]
+
+
+def _tx_contains_spark_coin(tx: Transaction, serialized_coin: bytes) -> bool:
+    try:
+        serialized_coin = _canonical_spark_coin(serialized_coin)
+    except (ValueError, IndexError, KeyError):
+        return False
+    for o in tx.outputs():
+        script = o.scriptpubkey
+        if (script and script[0] in (OP_SPARKMINT, OP_SPARKSMINT)
+                and serialized_coin in script[1:]):
+            return True
+    return False
+
+
+def is_exchange_address(address: str) -> bool:
+    try:
+        addrtype, _h160 = b58_address_to_hash160(address)
+    except Exception:
+        return False
+    return addrtype == constants.net.ADDRTYPE_EXP2PKH
+
+
+def _is_tx_not_found_error(e: Exception) -> bool:
+    msg = str(getattr(e, 'message', '') or e).lower()
+    return ('no such mempool or blockchain transaction' in msg
+            or 'not found' in msg)
 
 
 def _verify_mint_serial_context(tx: PartialTransaction,
@@ -167,13 +265,25 @@ def _anon_set_entry_size(entry) -> int:
         return 0
 
 
-def _merge_anon_sets(existing: dict, incoming: dict) -> dict:
-    merged = dict(existing or {})
+def _merge_anon_sets(existing: dict, incoming: dict) -> bool:
+    changed = False
     for gid, entry in (incoming or {}).items():
-        current = merged.get(gid)
-        if current is None or _anon_set_entry_size(entry) >= _anon_set_entry_size(current):
-            merged[gid] = entry
-    return merged
+        current = existing.get(gid)
+        if (current is None
+                or _anon_set_entry_size(entry) >= _anon_set_entry_size(current)):
+            if current != entry:
+                existing[gid] = entry
+                changed = True
+    return changed
+
+
+def _merge_dict(existing: dict, incoming: dict) -> bool:
+    changed = False
+    for key, value in (incoming or {}).items():
+        if key not in existing or existing[key] != value:
+            existing[key] = value
+            changed = True
+    return changed
 
 
 _SPARK_SHARED_CACHES: Dict[str, 'SparkSharedCache'] = {}
@@ -240,31 +350,23 @@ class SparkSharedCache:
             _logger.error(
                 f'could not write spark shared cache {self.path}: {e!r}')
 
-    @staticmethod
-    def _fingerprint(data: dict):
-        sets = data.get('spark_anon_sets') or {}
-        return (
-            tuple(sorted((gid, _anon_set_entry_size(e)) for gid, e in sets.items())),
-            len(data.get('spark_used_tags') or {}),
-            tuple(sorted((data.get('spark_groups') or {}).keys())),
-        )
-
     def update(self, *, anon_sets=None, used_tags=None, groups=None) -> None:
         with self._lock:
             self._load_locked()
-            before = self._fingerprint(self._data)
-            if anon_sets is not None:
-                self._data['spark_anon_sets'] = _merge_anon_sets(
-                    self._data.get('spark_anon_sets') or {}, anon_sets)
-            if used_tags is not None:
-                merged = dict(self._data.get('spark_used_tags') or {})
-                merged.update(used_tags)
-                self._data['spark_used_tags'] = merged
-            if groups is not None:
-                merged_groups = dict(self._data.get('spark_groups') or {})
-                merged_groups.update(groups)
-                self._data['spark_groups'] = merged_groups
-            if self._fingerprint(self._data) != before:
+            changed = False
+            for key, incoming, merge in (
+                    ('spark_anon_sets', anon_sets, _merge_anon_sets),
+                    ('spark_used_tags', used_tags, _merge_dict),
+                    ('spark_groups', groups, _merge_dict)):
+                if incoming is None:
+                    continue
+                incoming = json.loads(json.dumps(incoming))
+                stored = self._data.get(key)
+                if not isinstance(stored, dict):
+                    stored = self._data[key] = {}
+                    changed = True
+                changed |= merge(stored, incoming)
+            if changed:
                 self._flush_locked()
 
     def clear(self) -> None:
@@ -340,6 +442,7 @@ class FiroCacheCoordinator:
             'blockHash': latest['block_hash'],
             'setHash': latest['set_hash'],
             'size': int(latest.get('size', 0)),
+            'blockHeight': latest.get('block_height'),
         }
 
     @staticmethod
@@ -370,6 +473,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         self.syncing = False
         self._recover_pending = False
         self._mempool_txids_checked = set()
+        self._missing_spend_checks = {}
 
     async def _run_tasks(self, *, taskgroup):
         await super()._run_tasks(taskgroup=taskgroup)
@@ -405,9 +509,12 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
     def _merge_used_flags(self, coins: dict) -> None:
         current = self.wallet.db.get('spark_coins') or {}
+        state = self.wallet.db.get('spark_scan_state') or {}
+        pending = set(state.get('pending_spark_spends') or [])
         for tag, coin in coins.items():
             latest = current.get(tag)
-            if latest and latest.get('is_used') and not coin.get('is_used'):
+            if (latest and latest.get('is_used') and not coin.get('is_used')
+                    and latest.get('spent_txid') in pending):
                 coin['is_used'] = True
                 if latest.get('spent_txid'):
                     coin['spent_txid'] = latest['spent_txid']
@@ -419,7 +526,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         while True:
             if (self.wallet.spark_enabled
                     and self.wallet.is_up_to_date()
-                    and self.wallet.spark_key_data):
+                    and self.wallet.spark_view_key_hex):
                 try:
                     await self._update_pending_spark_spends()
                     if self._recover_pending:
@@ -427,6 +534,10 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                         await self.recover_spark(is_rescan=True)
                     else:
                         await self.refreshSparkData()
+                except SparkServerMisbehaving as e:
+                    self.logger.warning(
+                        f'Spark: disconnecting misbehaving server: {e!r}')
+                    raise
                 except Exception as e:
                     self.logger.info(f'Spark sync failed: {e!r}')
                 finally:
@@ -439,38 +550,25 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 pass
             self._wake.clear()
 
-    @contextlib.contextmanager
-    def _relaxed_msg_size_limit(self, limit: int = 64_000_000):
-        framer = getattr(
-            getattr(self.interface.session, 'transport', None), '_framer', None)
-        if framer is None:
-            yield
-            return
-        previous = framer.max_size
-        framer.max_size = max(previous, limit)
-        try:
-            yield
-        finally:
-            framer.max_size = previous
-
-    async def _request(self, method, params=()):
-        return await self.interface.session.send_request(
-            method, list(params), timeout=120)
+    async def _request(self, method, params=(), timeout=120):
+        session = self.interface.session
+        with session.extended_request_timeout(timeout):
+            return await session.send_request(
+                method, list(params), timeout=timeout)
 
     async def _large_request(self, method, params=()):
-        with self._relaxed_msg_size_limit():
-            return await self._request(method, params)
+        return await self._request(method, params, timeout=600)
 
     @staticmethod
     def _decode_b64(value):
         return base64.b64decode(''.join(value.splitlines()))
 
     @classmethod
-    def _identify_sector(cls, rows, groupId, key_data):
+    def _identify_sector(cls, rows, groupId, view_key_hex):
         coins = {}
         if not rows:
             return coins
-        view_key = libsparkmobile.create_full_view_key(key_data)
+        view_key = libsparkmobile.deserialize_full_view_key(view_key_hex)
         try:
             for row in rows:
                 if not isinstance(row, (list, tuple)) or len(row) != 3:
@@ -518,7 +616,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         return coins
 
     @classmethod
-    def _recover_saved_coins(cls, coins, key_data):
+    def _recover_saved_coins(cls, coins, view_key_hex):
         for coin in coins.values():
             coin.setdefault('serial_context', coin.get('context'))
             coin.setdefault('is_locked', None)
@@ -530,7 +628,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                        and c.get('context'))]
         if not pending:
             return
-        view_key = libsparkmobile.create_full_view_key(key_data)
+        view_key = libsparkmobile.deserialize_full_view_key(view_key_hex)
         try:
             for coin in pending:
                 recovered = libsparkmobile.identify_and_recover_coin(
@@ -547,23 +645,21 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
     async def _fetch_sectors(self, groupId, blockHash, numberOfCoinsToFetch):
         rows = []
-        fullSectorCount = numberOfCoinsToFetch // self.sectorSize
-        remainder = numberOfCoinsToFetch % self.sectorSize
-        with self._relaxed_msg_size_limit():
-            for i in range(fullSectorCount):
-                start = i * self.sectorSize
-                end = start + self.sectorSize
-                response = await self._request(
-                    'spark.getsparkanonymitysetsector',
-                    (str(groupId), blockHash, str(start), str(end)))
-                rows.extend(response.get('coins', []))
-            if remainder > 0:
-                start = numberOfCoinsToFetch - remainder
-                end = numberOfCoinsToFetch
-                response = await self._request(
-                    'spark.getsparkanonymitysetsector',
-                    (str(groupId), blockHash, str(start), str(end)))
-                rows.extend(response.get('coins', []))
+        for start in range(0, numberOfCoinsToFetch, self.sectorSize):
+            end = min(start + self.sectorSize, numberOfCoinsToFetch)
+            response = await self._request(
+                'spark.getsparkanonymitysetsector',
+                (str(groupId), blockHash, str(start), str(end)))
+            coins = response.get('coins') if isinstance(response, dict) else None
+            if (not isinstance(coins, list) or len(coins) != end - start
+                    or not all(_is_set_row(r) for r in coins)):
+                raise SparkServerMisbehaving(
+                    f'bad anonymity set sector {start}-{end} '
+                    f'for group {groupId}')
+            rows.extend(coins)
+            self.logger.info(
+                f'Spark group {groupId}: fetched {len(rows)}/'
+                f'{numberOfCoinsToFetch} coins')
         return rows
 
     async def _fetch_mempool_spark_rows(self):
@@ -619,12 +715,13 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             self, groupId, anon_sets, coins, groups, rawCoinsBySetId=None):
         meta = await self._request(
             'spark.getsparkanonymitysetmeta', (str(groupId),))
-        blockHash = meta['blockHash']
-        setHash = meta['setHash']
-        size = int(meta['size'])
+        blockHash, setHash, size = _parse_set_meta(meta)
         prevMeta = FiroCacheCoordinator.getLatestSetInfoForGroupId(
             self.wallet.db, groupId, anon_sets=anon_sets)
         prevSize = int(prevMeta['size']) if prevMeta else 0
+        if size < prevSize:
+            raise SparkServerMisbehaving(
+                f'spark group {groupId} shrank from {prevSize} to {size}')
 
         if prevMeta and prevMeta['blockHash'] == blockHash:
             groups[str(groupId)] = {
@@ -645,6 +742,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 groupId, blockHash, numberOfCoinsToFetch)
 
         if rows:
+            blockHeight = await self._verify_set_block(blockHash, rows[0])
             if rawCoinsBySetId is not None:
                 rawCoinsBySetId[groupId] = rows
             version_coins = list(reversed(rows))
@@ -653,6 +751,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             versions = list((entry or {}).get('versions') or [])
             versions.append({
                 'block_hash': blockHash,
+                'block_height': blockHeight,
                 'set_hash': setHash,
                 'size': size,
                 'coins': version_coins,
@@ -678,7 +777,13 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             util.trigger_callback('wallet_updated', self.wallet)
         response = await self._large_request(
             'spark.getusedcoinstagstxhashes', (str(tag_count),))
-        tag_rows = response.get('tagsandtxids', [])
+        tag_rows = (response.get('tagsandtxids')
+                    if isinstance(response, dict) else None)
+        if (not isinstance(tag_rows, list)
+                or not all(isinstance(r, (list, tuple)) and len(r) == 2
+                           and all(isinstance(x, str) for x in r)
+                           for r in tag_rows)):
+            raise SparkServerMisbehaving('bad spark used coin tags reply')
         hashes = await run_in_thread(
             libsparkmobile.hash_tags,
             [self._decode_b64(row[0]) for row in tag_rows])
@@ -693,16 +798,15 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         if not txids:
             return result
         batch_size = 100
-        with self._relaxed_msg_size_limit():
-            for start in range(0, len(txids), batch_size):
-                batch = txids[start:start + batch_size]
-                async with self.interface.session.send_batch() as batcher:
-                    for txid in batch:
-                        batcher.add_request(
-                            'blockchain.transaction.get', (txid, True))
-                for txid, tx in zip(batch, batcher.results):
-                    if isinstance(tx, dict):
-                        result[txid] = tx
+        for start in range(0, len(txids), batch_size):
+            batch = txids[start:start + batch_size]
+            async with self.interface.session.send_batch() as batcher:
+                for txid in batch:
+                    batcher.add_request(
+                        'blockchain.transaction.get', (txid, True))
+            for txid, tx in zip(batch, batcher.results):
+                if isinstance(tx, dict):
+                    result[txid] = tx
         return result
 
     async def _update_pending_spark_spends(self):
@@ -717,13 +821,26 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 pending.append(spent_txid)
         still_pending = []
         updated = False
+        canonical_tags = None
         for txid in dict.fromkeys(pending):
             try:
                 result = await self._large_request(
                     'blockchain.transaction.get', (txid, True))
+            except RPCError as e:
+                if not _is_tx_not_found_error(e):
+                    still_pending.append(txid)
+                    continue
+                if canonical_tags is None:
+                    canonical_tags = self._shared_cache().snapshot_used_tags()
+                if self._maybe_release_dropped_spend(txid, canonical_tags):
+                    updated = True
+                else:
+                    still_pending.append(txid)
+                continue
             except Exception:
                 still_pending.append(txid)
                 continue
+            self._missing_spend_checks.pop(txid, None)
             height = result.get('height') if isinstance(result, dict) else None
             if not isinstance(height, int) or height <= 0:
                 still_pending.append(txid)
@@ -739,6 +856,113 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         if updated:
             await self._save_spark_db()
             await self._notify_wallet_updated()
+
+    def _maybe_release_dropped_spend(self, txid: str,
+                                     canonical_tags: dict) -> bool:
+        count = self._missing_spend_checks.get(txid, 0) + 1
+        self._missing_spend_checks[txid] = count
+        if count < SPEND_MISSING_CHECKS_BEFORE_RELEASE:
+            return False
+        coins = self.wallet.db.get('spark_coins') or {}
+        tags = [tag for tag, c in coins.items()
+                if c.get('spent_txid') == txid]
+        if any(tag in canonical_tags for tag in tags):
+            return False
+        self.logger.info(
+            f'Spark spend {txid} was dropped by the network; '
+            f'releasing {len(tags)} reserved coin(s)')
+        self._missing_spend_checks.pop(txid, None)
+        self.wallet.release_spark_reservation(txid)
+        return True
+
+    async def _verify_coin_transactions(self, coins: dict) -> None:
+        wallet = self.wallet
+        unverified = wallet.get_unverified_txs()
+        to_fetch = list({
+            c['txid'] for c in coins.values()
+            if c.get('txid')
+            and (not c.get('tx_checked')
+                 or (not wallet.db.is_in_verified_tx(c['txid'])
+                     and c['txid'] not in unverified))})
+        txs = await self._batch_fetch_transactions(to_fetch)
+        rejected = set()
+        for txid in to_fetch:
+            data = txs.get(txid)
+            if not isinstance(data, dict):
+                continue
+            try:
+                raw = data.get('hex') or await self.interface.get_transaction(txid)
+                tx = Transaction(raw)
+                tx.deserialize()
+                if tx.txid() != txid:
+                    raise ValueError(f'server returned tx {tx.txid()}')
+            except Exception as e:
+                self.logger.warning(
+                    f'Spark: could not validate transaction {txid}: {e!r}')
+                continue
+            for tag, coin in coins.items():
+                if coin.get('txid') != txid:
+                    continue
+                try:
+                    serialized = self._decode_b64(coin['serialized_coin'])
+                except Exception:
+                    serialized = b''
+                if not _tx_contains_spark_coin(tx, serialized):
+                    rejected.add(tag)
+                    continue
+                coin['tx_checked'] = True
+            height = data.get('height')
+            if isinstance(height, int) and height > 0:
+                wallet.add_unverified_tx(txid, height)
+        for tag in rejected:
+            coin = coins.pop(tag)
+            self.logger.warning(
+                f'Spark: dropping coin claimed to be in {coin.get("txid")}, '
+                f'the transaction does not contain it')
+        for coin in coins.values():
+            info = wallet.db.get_verified_tx(coin.get('txid'))
+            if info and coin.get('tx_checked'):
+                coin['height'] = info.height
+                coin['timestamp'] = info.timestamp
+            else:
+                coin['height'] = None
+
+    async def _verify_set_block(self, blockHash: str, newest_row) -> int:
+        try:
+            block_hash_hex = self._decode_b64(blockHash)[::-1].hex()
+            txid = self._decode_b64(newest_row[1])[::-1].hex()
+        except Exception:
+            raise SparkServerMisbehaving(f'bad spark set block hash {blockHash!r}')
+        data = await self._request('blockchain.transaction.get', (txid, True))
+        height = data.get('height') if isinstance(data, dict) else None
+        if not isinstance(height, int) or height <= 0:
+            raise SparkServerMisbehaving(
+                f'spark set block {block_hash_hex} has no mined coin {txid}')
+        if height > self.wallet.get_local_height():
+            raise RuntimeError(f'headers not synced to spark set height {height}')
+        if self._header_hash_at(height) != block_hash_hex:
+            raise SparkServerMisbehaving(
+                f'spark set block {block_hash_hex} is not our block at '
+                f'height {height}')
+        return height
+
+    async def _anchor_cached_sets(self, anon_sets: dict) -> None:
+        for gid, entry in anon_sets.items():
+            versions = (entry or {}).get('versions') or []
+            if not versions:
+                continue
+            latest = max(versions, key=lambda v: int(v.get('size', 0)))
+            if latest.get('block_height') or not latest.get('coins'):
+                continue
+            latest['block_height'] = await self._verify_set_block(
+                latest['block_hash'], latest['coins'][-1])
+
+    def _header_hash_at(self, height: int) -> Optional[str]:
+        try:
+            header = self.network.blockchain().read_header(height)
+        except Exception:
+            return None
+        return hash_header(header) if header else None
 
     async def _import_missing_spark_spend_transactions(self):
         missing = [
@@ -777,8 +1001,10 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
     async def recover_spark(self, is_rescan: bool = True):
         if (not self.wallet.spark_enabled
                 or not libsparkmobile.is_available()
-                or not self.wallet.spark_key_data):
+                or not self.wallet.spark_view_key_hex):
             return
+        if is_rescan:
+            self._shared_cache().clear()
         self.wallet.clear_spark_data(is_rescan=is_rescan)
         await self.refreshSparkData()
         await self._import_missing_spark_spend_transactions()
@@ -786,11 +1012,11 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
     async def refreshSparkData(self, refreshProgressRange=None):
         if (not self.wallet.spark_enabled
                 or not libsparkmobile.is_available()
-                or not self.wallet.spark_key_data):
+                or not self.wallet.spark_view_key_hex):
             return
         async with self._sync_lock:
-            key_data = self.wallet.spark_key_data
-            if not key_data:
+            view_key_hex = self.wallet.spark_view_key_hex
+            if not view_key_hex:
                 return
             shared = self._shared_cache()
             self._migrate_legacy_spark_cache(shared)
@@ -800,28 +1026,47 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             anon_sets = shared.snapshot_anon_sets()
             groups = shared.snapshot_groups()
             await run_in_thread(
-                self._recover_saved_coins, coins, key_data)
+                self._recover_saved_coins, coins, view_key_hex)
             local_height = self.wallet.get_local_height()
+            tip_hash = self._header_hash_at(local_height)
 
-            rolled_back = local_height < state.get('chain_height', 0)
+            prev_height = int(state.get('chain_height', 0) or 0)
+            prev_hash = state.get('chain_tip_hash')
+            rolled_back = local_height < prev_height
+            if not rolled_back and prev_hash:
+                current = self._header_hash_at(prev_height)
+                rolled_back = current is not None and current != prev_hash
             if rolled_back:
+                self.logger.info(
+                    f'Spark: chain fork detected at/below height '
+                    f'{prev_height}, rebuilding the Spark cache')
                 shared.clear()
                 anon_sets, used_tags, groups = {}, {}, {}
                 state.pop('firo_spark_cache_set_block_hash_cache', None)
+                reserved = set(state.get('pending_spark_spends') or [])
                 for c in coins.values():
                     c['height'] = None
+                    c.pop('tx_checked', None)
+                    if c.get('spent_txid') in reserved:
+                        continue
                     c['is_used'] = False
                     c.pop('spent_txid', None)
 
-            latestGroupId = int(await self._request(
+            latestGroupId = _parse_group_id(await self._request(
                 'spark.getsparklatestcoinid'))
+            cachedGroupIds = [int(g) for g in anon_sets.keys()]
+            if cachedGroupIds and latestGroupId < max(cachedGroupIds):
+                raise SparkServerMisbehaving(
+                    f'spark latest group id went back from '
+                    f'{max(cachedGroupIds)} to {latestGroupId}')
 
             groupIds = []
-            if latestGroupId > 1:
-                for groupId in range(1, latestGroupId):
-                    if not FiroCacheCoordinator.checkSetInfoForGroupIdExists(
-                            self.wallet.db, groupId, anon_sets=anon_sets):
-                        groupIds.append(groupId)
+            for groupId in range(1, latestGroupId):
+                if not FiroCacheCoordinator.checkSetInfoForGroupIdExists(
+                        self.wallet.db, groupId, anon_sets=anon_sets):
+                    groupIds.append(groupId)
+            more_groups_pending = len(groupIds) >= MAX_SPARK_GROUPS_PER_REFRESH
+            groupIds = groupIds[:MAX_SPARK_GROUPS_PER_REFRESH - 1]
             groupIds.append(latestGroupId)
             self.logger.info(
                 f'refreshSparkData: latestGroupId={latestGroupId} '
@@ -840,17 +1085,23 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             for groupId in groupIds:
                 coins = await self.runFetchAndUpdateSparkAnonSetCacheForGroupId(
                     groupId, anon_sets, coins, groups)
+                self.logger.info(
+                    f'Spark group {groupId} of {latestGroupId} synced')
                 if percent_increment is not None:
                     current_percent += percent_increment
                     util.trigger_callback(
                         'spark_refresh_progress', self.wallet, current_percent)
 
+            await self._anchor_cached_sets(anon_sets)
             await self.runFetchAndUpdateSparkUsedCoinTags(used_tags)
             if percent_increment is not None:
                 current_percent += percent_increment
                 util.trigger_callback(
                     'spark_refresh_progress', self.wallet, current_percent)
 
+            if state.get('coin_check_version') != SPARK_COIN_CHECK_VERSION:
+                state.pop('firo_spark_cache_set_block_hash_cache', None)
+                state['coin_check_version'] = SPARK_COIN_CHECK_VERSION
             groupIdBlockHashMap = dict(
                 state.get('firo_spark_cache_set_block_hash_cache') or {})
             rawCoinsBySetId = {}
@@ -874,7 +1125,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
             for groupId, rows in rawCoinsBySetId.items():
                 found = await run_in_thread(
-                    self._identify_sector, rows, groupId, key_data)
+                    self._identify_sector, rows, groupId, view_key_hex)
                 self.logger.info(
                     f'refreshSparkData: group {groupId}: scanned {len(rows)} '
                     f'new set coins, identified {len(found)} as ours')
@@ -889,39 +1140,19 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             mempool_rows = await self._fetch_mempool_spark_rows()
             if mempool_rows:
                 found = await run_in_thread(
-                    self._identify_sector, mempool_rows, latestGroupId, key_data)
+                    self._identify_sector, mempool_rows, latestGroupId, view_key_hex)
                 coins.update(found)
 
-            coinsToCheck = [
-                coin for coin in coins.values()
-                if coin.get('height') is None or not coin.get('is_used')
-            ]
-            spentCoinTags = None
-            if coinsToCheck:
-                spentCoinTags = set(FiroCacheCoordinator.getUsedCoinTags(
-                    used_tags, 0))
+            await self._verify_coin_transactions(coins)
 
-            coinsToCheckTxids = list({
-                coin['txid'] for coin in coinsToCheck
-                if coin.get('height') is None and coin.get('txid')
-            })
-            coinsToCheckTransactions = await self._batch_fetch_transactions(
-                coinsToCheckTxids)
-
-            for coin in coinsToCheck:
-                if coin.get('height') is None:
-                    tx = coinsToCheckTransactions.get(coin['txid'])
-                    if isinstance(tx, dict) and isinstance(tx.get('height'), int):
-                        coin['height'] = tx['height']
-                        coin['timestamp'] = tx.get('blocktime')
-                        coin['is_used'] = coin['l_tag_hash'] in spentCoinTags
-                        if coin['is_used']:
-                            coin['spent_txid'] = used_tags.get(coin['l_tag_hash'])
-                elif spentCoinTags and coin['l_tag_hash'] in spentCoinTags:
+            for coin in coins.values():
+                spent_txid = used_tags.get(coin['l_tag_hash'])
+                if spent_txid:
                     coin['is_used'] = True
-                    coin['spent_txid'] = used_tags.get(coin['l_tag_hash'])
+                    coin['spent_txid'] = spent_txid
 
             state['chain_height'] = local_height
+            state['chain_tip_hash'] = tip_hash
             state.pop('groups', None)
             state.pop('used_tags_count', None)
             if not rolled_back:
@@ -944,6 +1175,8 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                     'spark_refresh_progress', self.wallet, current_percent)
             await self._import_missing_spark_spend_transactions()
             await self._notify_wallet_updated()
+            if more_groups_pending:
+                self.trigger()
 
 
 class SparkInterfaceMixin:
@@ -998,11 +1231,9 @@ class SparkInterfaceMixin:
         if save:
             self.save_db()
 
-    def _init_spark_session(self) -> None:
-        if not self.spark_key_data:
-            return
+    def _init_spark_session(self, key_data: bytes) -> None:
         self.spark_view_key_hex = libsparkmobile.get_full_view_key_hex(
-            self.spark_key_data)
+            key_data)
         self.db.put('spark_view_key_hex', self.spark_view_key_hex)
         book = self._spark_address_book()
         if '1' not in book:
@@ -1020,26 +1251,24 @@ class SparkInterfaceMixin:
         is_testnet = bool(constants.net.TESTNET)
         view_key = getattr(self, 'spark_view_key_hex', None) or self.db.get(
             'spark_view_key_hex')
-        if view_key:
-            return libsparkmobile.get_address_from_full_view_key_hex(
-                view_key, diversifier, is_testnet=is_testnet)
-        return libsparkmobile.get_address(
-            self.spark_key_data, diversifier=diversifier,
-            is_testnet=is_testnet)
+        if not view_key:
+            raise RuntimeError(_('Spark key is not available'))
+        return libsparkmobile.get_address_from_full_view_key_hex(
+            view_key, diversifier, is_testnet=is_testnet)
 
     @property
     def sparkChangeAddress(self) -> Optional[str]:
         cached = getattr(self, '_spark_change_address', None)
         if cached:
             return cached
-        if self.spark_key_data or self.db.get('spark_view_key_hex'):
+        if self.spark_view_key_hex or self.db.get('spark_view_key_hex'):
             self._spark_change_address = self._generateSparkAddress(
                 libsparkmobile.SPARK_CHANGE_DIVERSIFIER)
             return self._spark_change_address
         return None
 
     def getCurrentReceivingSparkAddress(self) -> str:
-        if not self.spark_key_data and not self.db.get('spark_view_key_hex'):
+        if not self.spark_view_key_hex and not self.db.get('spark_view_key_hex'):
             raise RuntimeError(_('Spark key is not available'))
         cached = getattr(self, '_current_spark_address', None)
         if cached:
@@ -1079,20 +1308,27 @@ class SparkInterfaceMixin:
             if coin.get('is_used')]
         return FiroCacheCoordinator.getUsedCoinTxidsFor(used_tags, tags)
 
-    def estimateFeeForSpark(self, amount: int) -> int:
+    def estimateFeeForSpark(self, amount: int, password=None) -> int:
         if self.is_watching_only():
             raise RuntimeError(
                 _('Fee estimation is not supported for view only wallets'))
-        if not self.spark_key_data:
-            raise RuntimeError(_('Spark key is not available'))
         spend_amount = int(amount)
         if spend_amount <= 0:
             return 0
         coins = self.get_spark_spendable_coins()
         if spend_amount > sum(int(c['value']) for c in coins):
             return 0
-        estimate = _asyncSparkFeesWrapper(
-            privateKeyHex=self.spark_key_data,
+        key_data = self.derive_spark_key(password)
+        try:
+            estimate = self._estimateFeeForSpark(key_data, spend_amount, coins)
+        finally:
+            del key_data
+        return max(0, int(estimate))
+
+    def _estimateFeeForSpark(self, key_data: bytes, spend_amount: int,
+                             coins) -> int:
+        return _asyncSparkFeesWrapper(
+            privateKeyHex=key_data,
             index=self.sparkIndex,
             sendAmount=spend_amount,
             subtractFeeFromAmount=True,
@@ -1100,7 +1336,6 @@ class SparkInterfaceMixin:
             privateRecipientsCount=1,
             utxoNum=0,
             additionalTxSize=0)
-        return max(0, int(estimate))
 
     def confirmSendSpark(self, tx: PartialTransaction) -> str:
         used = (getattr(tx, '_spark_used_tags', None)
@@ -1477,20 +1712,25 @@ class SparkInterfaceMixin:
             signed.append(tx)
         return signed
 
-    def prepareSendSpark(
-            self, *,
+    def prepareSendSpark(self, *, password=None,
+                         **kwargs) -> PartialTransaction:
+        if not self.spark_enabled:
+            raise RuntimeError(_('Spark is disabled for this session'))
+        if not libsparkmobile.is_available():
+            raise RuntimeError('electrum_libsparkmobile is not available')
+        key_data = self.derive_spark_key(password)
+        try:
+            return self._prepareSendSpark(key_data, **kwargs)
+        finally:
+            del key_data
+
+    def _prepareSendSpark(
+            self, key_data: bytes, *,
             recipients: Sequence[Tuple[str, int]] = None,
             sparkRecipients: Sequence[Tuple[str, int, str]] = None,
             address: str = None,
             amount=None,
             memo: str = '') -> PartialTransaction:
-        if not self.spark_enabled:
-            raise RuntimeError(_('Spark is disabled for this session'))
-        if not libsparkmobile.is_available():
-            raise RuntimeError('electrum_libsparkmobile is not available')
-        if not self.spark_key_data:
-            raise RuntimeError(_('Spark key is not available'))
-
         transparentRecipients = list(recipients or [])
         privateSparkRecipients = list(sparkRecipients or [])
         if address is not None:
@@ -1509,6 +1749,13 @@ class SparkInterfaceMixin:
 
         if not transparentRecipients and not privateSparkRecipients:
             raise ValueError(_('No recipients provided.'))
+        for addr, _amt in transparentRecipients:
+            if is_exchange_address(addr):
+                raise ValueError(_(
+                    'Spending Spark funds to an exchange address is not '
+                    'allowed. Send them to a transparent address of your '
+                    'own wallet first and from there to the exchange '
+                    'address.'))
         if len(privateSparkRecipients) >= SPARK_OUT_LIMIT_PER_TX - 1:
             raise ValueError(_('Spark shielded output limit exceeded.'))
 
@@ -1576,7 +1823,7 @@ class SparkInterfaceMixin:
         estimatedFee = 0
         if isSendAll:
             estimatedFee = _asyncSparkFeesWrapper(
-                privateKeyHex=self.spark_key_data,
+                privateKeyHex=key_data,
                 index=self.sparkIndex,
                 sendAmount=txAmount,
                 subtractFeeFromAmount=True,
@@ -1639,7 +1886,7 @@ class SparkInterfaceMixin:
             })
 
         spend = _createSparkSend(
-            privateKeyHex=self.spark_key_data,
+            privateKeyHex=key_data,
             index=self.sparkIndex,
             recipients=ffi_recipients,
             privateRecipients=ffi_private,

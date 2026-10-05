@@ -22,6 +22,7 @@
 # SOFTWARE.
 
 import asyncio
+import base64
 import threading
 import asyncio
 import itertools
@@ -1236,25 +1237,33 @@ class AddressSynchronizer(Logger):
         coins = [c for c in self.db.get('spark_coins', {}).values()
                  if not c.get('is_used')]
         total = sum(int(c['value']) for c in coins)
-        height = self.get_local_height()
-        spendable = sum(
-            int(c['value']) for c in coins
-            if c.get('height') and height - c['height'] + 1 >= 1)
+        spendable = sum(int(c['value']) for c in coins
+                        if self.get_spark_coin_height(c))
         return SparkBalance(total, spendable, total - spendable, 0)
+
+    def get_spark_coin_height(self, coin) -> Optional[int]:
+        if not coin.get('tx_checked'):
+            return None
+        info = self.db.get_verified_tx(coin.get('txid'))
+        if not info or info.height <= 0:
+            return None
+        if self.get_local_height() - info.height + 1 < 1:
+            return None
+        return info.height
 
     def get_spark_spendable_coins(self) -> list:
         if not self.spark_enabled:
             return []
-        height = self.get_local_height()
         out = []
         for coin in self.db.get('spark_coins', {}).values():
-            if coin.get('is_used') or not coin.get('height'):
+            if coin.get('is_used'):
                 continue
             if int(coin.get('value') or 0) <= 0:
                 continue
-            if height - coin['height'] + 1 < 1:
+            height = self.get_spark_coin_height(coin)
+            if not height:
                 continue
-            out.append(coin)
+            out.append(dict(coin, height=height))
         return out
 
     def get_spark_cover_sets(self, group_ids=None) -> list:
@@ -1262,6 +1271,10 @@ class AddressSynchronizer(Logger):
             group_ids = {int(c['group_id'])
                          for c in self.get_spark_spendable_coins()}
         shared = get_spark_shared_cache(self.config)
+        own_heights = {}
+        for coin in self.get_spark_spendable_coins():
+            gid = int(coin['group_id'])
+            own_heights[gid] = max(own_heights.get(gid, 0), int(coin['height']))
         result = []
         for groupId in sorted(group_ids):
             info = FiroCacheCoordinator.getLatestSetInfoForGroupId(shared, groupId)
@@ -1271,6 +1284,8 @@ class AddressSynchronizer(Logger):
             if info is None:
                 raise RuntimeError(
                     'The `info` should never be null here')
+            self._check_cover_set_anchor(groupId, info,
+                                         own_heights.get(groupId, 0))
             result.append({
                 'set_id': groupId,
                 'set_hash': info['setHash'],
@@ -1279,6 +1294,26 @@ class AddressSynchronizer(Logger):
                 'raw_coins': resultSet,
             })
         return result
+
+    def _check_cover_set_anchor(self, groupId: int, info: dict,
+                                min_height: int) -> None:
+        height = info.get('blockHeight')
+        not_ready = _('Spark anonymity set is not verified yet, '
+                      'please wait for synchronization.')
+        if not isinstance(height, int) or height <= 0:
+            raise RuntimeError(not_ready)
+        header = (self.network.blockchain().read_header(height)
+                  if self.network else None)
+        try:
+            expected = base64.b64decode(info['blockHash'])[::-1].hex()
+        except Exception:
+            raise RuntimeError(not_ready)
+        if not header or hash_header(header) != expected:
+            raise RuntimeError(not_ready)
+        if height < min_height:
+            raise RuntimeError(_(
+                'Spark anonymity set for group {} is older than your coins '
+                'in it, please wait for synchronization.').format(groupId))
 
     def is_used(self, address: str) -> bool:
         return self.get_address_history_len(address) != 0

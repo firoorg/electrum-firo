@@ -8,12 +8,19 @@ native code throw.
 """
 import ctypes
 import hashlib
+import os
 import unittest
 from ctypes import POINTER, c_char_p, c_int, c_ubyte, c_void_p
 
 from electrum_firo import libsparkmobile, spark_interface
 
 from . import ElectrumTestCase
+
+
+if (os.environ.get('ELECTRUM_REQUIRE_LIBSPARKMOBILE')
+        and not libsparkmobile.is_available()):
+    raise ImportError('ELECTRUM_REQUIRE_LIBSPARKMOBILE is set but '
+                      'electrum_libsparkmobile could not be loaded')
 
 
 BECH32M_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
@@ -304,3 +311,68 @@ class TestSparkSpendTxType(ElectrumTestCase):
 
     def test_wallet_builds_v2_spends(self):
         self.assertEqual(spark_interface.SPARK_SPEND_V2, 11)
+
+
+def _own_mint_coins(count: int, value: int):
+    address = libsparkmobile.get_address(TEST_KEY, 1)
+    coins = []
+    for i in range(count):
+        context = libsparkmobile.serialize_mint_context(
+            [(hashlib.sha256(b'candidate-%d' % i).digest(), i)])
+        [(script, _amount)] = libsparkmobile.create_spark_mint_recipients(
+            [(address, value, '')], context, generate=True)
+        coins.append({
+            'serialized_coin': script[1:],
+            'context': context,
+            'group_id': 1,
+            'height': 100 + i,
+        })
+    return coins
+
+
+@unittest.skipUnless(libsparkmobile.is_available(),
+                     'electrum_libsparkmobile is not built')
+class TestCandidateCoinLimits(ElectrumTestCase):
+
+    def test_fee_estimate_with_101_candidates_selecting_one(self):
+        coins = _own_mint_coins(101, 10 ** 8)
+        fee = libsparkmobile.estimate_spark_fee(
+            TEST_KEY, send_amount=10 ** 6, subtract_fee_from_amount=False,
+            coins=coins, private_recipients_count=1)
+        self.assertGreater(fee, 0)
+        single = libsparkmobile.estimate_spark_fee(
+            TEST_KEY, send_amount=10 ** 6, subtract_fee_from_amount=False,
+            coins=coins[:1], private_recipients_count=1)
+        self.assertEqual(single, fee)
+
+
+@unittest.skipUnless(libsparkmobile.is_available(),
+                     'electrum_libsparkmobile is not built')
+class TestCoinLengthPrefixes(ElectrumTestCase):
+
+    def _coin_with_ciphertext_size(self, compact_size: bytes) -> bytes:
+        return b'\x00' + b'\x02' + b'\x00' * 33 + b'\x02' + b'\x00' * 33 \
+            + b'\x02' + b'\x00' * 33 + compact_size
+
+    def test_oversized_length_prefix_is_rejected(self):
+        view_key = libsparkmobile.create_full_view_key(TEST_KEY)
+        try:
+            for size in (b'\xfe\x40\x4b\x4c\x00',
+                         b'\xff' + (2 ** 40).to_bytes(8, 'little'),
+                         b'\xfd\xff\xff'):
+                coin = self._coin_with_ciphertext_size(size)
+                self.assertLess(len(coin), 120)
+                self.assertIsNone(libsparkmobile.identify_and_recover_coin(
+                    coin, b'\x00' * 32, view_key))
+        finally:
+            libsparkmobile.delete_full_view_key(view_key)
+
+    def test_valid_coin_still_recovers(self):
+        [coin] = _own_mint_coins(1, 12345)
+        view_key = libsparkmobile.create_full_view_key(TEST_KEY)
+        try:
+            recovered = libsparkmobile.identify_and_recover_coin(
+                coin['serialized_coin'], coin['context'], view_key)
+        finally:
+            libsparkmobile.delete_full_view_key(view_key)
+        self.assertEqual(12345, recovered['value'])
