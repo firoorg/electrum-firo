@@ -22,6 +22,7 @@
 # SOFTWARE.
 
 import asyncio
+import base64
 import threading
 import asyncio
 import itertools
@@ -34,11 +35,13 @@ from . import bitcoin, util
 from .bitcoin import COINBASE_MATURITY
 from .dash_ps import PSManager
 from .dash_ps_util import PSCoinRounds, PS_MIXING_TX_TYPES
-from .dash_tx import tx_header_to_tx_type
+from .dash_tx import PSTxTypes, classify_onchain_tx_type
 from .util import profiler, bfh, TxMinedInfo, UnrelatedTransactionException, with_lock
 from .protx import ProTxManager
 from .transaction import Transaction, TxOutput, TxInput, PartialTxInput, TxOutpoint, PartialTransaction
 from .synchronizer import Synchronizer
+from .spark_interface import (FiroCacheCoordinator, SparkSynchronizer,
+                              get_spark_shared_cache)
 from .verifier import SPV
 from .blockchain import hash_header, Blockchain
 from .i18n import _
@@ -66,6 +69,13 @@ class HistoryItem(NamedTuple):
     group_data: Optional[list]
 
 
+class SparkBalance(NamedTuple):
+    total: int
+    spendable: int
+    pending_spendable: int
+    blocked_total: int
+
+
 class TxWalletDelta(NamedTuple):
     is_relevant: bool  # "related to wallet?"
     is_any_input_ismine: bool
@@ -90,6 +100,7 @@ class AddressSynchronizer(Logger):
         # verifier (SPV) and synchronizer are started in start_network
         self.synchronizer = None
         self.verifier = None
+        self.spark_synchronizer = None
         # locks: if you need to take multiple ones, acquire them in the order they are defined here!
         self.lock = threading.RLock()
         self.transaction_lock = threading.RLock()
@@ -201,6 +212,7 @@ class AddressSynchronizer(Logger):
         if self.network is not None:
             self.synchronizer = Synchronizer(self)
             self.verifier = SPV(self.network, self)
+            self.spark_synchronizer = SparkSynchronizer(self.network, self)
             util.register_callback(self.on_blockchain_updated, ['blockchain_updated'])
             self.protx_manager.on_network_start(self.network)
             self.psman.on_network_start(self.network)
@@ -245,9 +257,12 @@ class AddressSynchronizer(Logger):
                         await group.spawn(self.synchronizer.stop())
                     if self.verifier:
                         await group.spawn(self.verifier.stop())
+                    if self.spark_synchronizer:
+                        await group.spawn(self.spark_synchronizer.stop())
             finally:  # even if we get cancelled
                 self.synchronizer = None
                 self.verifier = None
+                self.spark_synchronizer = None
                 util.unregister_callback(self.on_blockchain_updated)
                 self.psman.on_stop_threads()
                 util.unregister_callback(self.on_dash_islock)
@@ -703,8 +718,7 @@ class AddressSynchronizer(Logger):
             if show_dip2:
                 tx = self.db.get_transaction(tx_hash)
                 if tx:
-                    raw_bytes = bfh(tx.serialize())
-                    tx_type = tx_header_to_tx_type(raw_bytes[:4])
+                    tx_type = classify_onchain_tx_type(tx)
             if (group_ps or show_dip2) and not tx_type:  # prefer ProTx type
                 tx_type, completed = self.db.get_ps_tx(tx_hash)
 
@@ -1216,6 +1230,90 @@ class AddressSynchronizer(Logger):
             uu += u
             xx += x
         return cc, uu, xx
+
+    def get_spark_balance(self) -> SparkBalance:
+        if not self.spark_enabled:
+            return SparkBalance(0, 0, 0, 0)
+        coins = [c for c in self.db.get('spark_coins', {}).values()
+                 if not c.get('is_used')]
+        total = sum(int(c['value']) for c in coins)
+        spendable = sum(int(c['value']) for c in coins
+                        if self.get_spark_coin_height(c))
+        return SparkBalance(total, spendable, total - spendable, 0)
+
+    def get_spark_coin_height(self, coin) -> Optional[int]:
+        if not coin.get('tx_checked'):
+            return None
+        info = self.db.get_verified_tx(coin.get('txid'))
+        if not info or info.height <= 0:
+            return None
+        if self.get_local_height() - info.height + 1 < 1:
+            return None
+        return info.height
+
+    def get_spark_spendable_coins(self) -> list:
+        if not self.spark_enabled:
+            return []
+        out = []
+        for coin in self.db.get('spark_coins', {}).values():
+            if coin.get('is_used'):
+                continue
+            if int(coin.get('value') or 0) <= 0:
+                continue
+            height = self.get_spark_coin_height(coin)
+            if not height:
+                continue
+            out.append(dict(coin, height=height))
+        return out
+
+    def get_spark_cover_sets(self, group_ids=None) -> list:
+        if group_ids is None:
+            group_ids = {int(c['group_id'])
+                         for c in self.get_spark_spendable_coins()}
+        shared = get_spark_shared_cache(self.config)
+        own_heights = {}
+        for coin in self.get_spark_spendable_coins():
+            gid = int(coin['group_id'])
+            own_heights[gid] = max(own_heights.get(gid, 0), int(coin['height']))
+        result = []
+        for groupId in sorted(group_ids):
+            info = FiroCacheCoordinator.getLatestSetInfoForGroupId(shared, groupId)
+            resultSet = FiroCacheCoordinator.getSetCoinsForGroupId(shared, groupId)
+            if not resultSet:
+                continue
+            if info is None:
+                raise RuntimeError(
+                    'The `info` should never be null here')
+            self._check_cover_set_anchor(groupId, info,
+                                         own_heights.get(groupId, 0))
+            result.append({
+                'set_id': groupId,
+                'set_hash': info['setHash'],
+                'block_hash': info['blockHash'],
+                'coins': [row[0] for row in resultSet],
+                'raw_coins': resultSet,
+            })
+        return result
+
+    def _check_cover_set_anchor(self, groupId: int, info: dict,
+                                min_height: int) -> None:
+        height = info.get('blockHeight')
+        not_ready = _('Spark anonymity set is not verified yet, '
+                      'please wait for synchronization.')
+        if not isinstance(height, int) or height <= 0:
+            raise RuntimeError(not_ready)
+        header = (self.network.blockchain().read_header(height)
+                  if self.network else None)
+        try:
+            expected = base64.b64decode(info['blockHash'])[::-1].hex()
+        except Exception:
+            raise RuntimeError(not_ready)
+        if not header or hash_header(header) != expected:
+            raise RuntimeError(not_ready)
+        if height < min_height:
+            raise RuntimeError(_(
+                'Spark anonymity set for group {} is older than your coins '
+                'in it, please wait for synchronization.').format(groupId))
 
     def is_used(self, address: str) -> bool:
         return self.get_address_history_len(address) != 0

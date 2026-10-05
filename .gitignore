@@ -20,6 +20,9 @@ bin/
 .pytest_cache/
 .coverage
 
+/electrum_libsparkmobile/
+/electrum_dash/libelectrum_libsparkmobile.*
+
 electrum_data/
 electrum_firo/gui/kivy/theming/light-0.png
 electrum_firo/gui/kivy/theming/light-1.png
