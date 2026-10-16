@@ -10,6 +10,7 @@ graft debian
 include contrib/requirements/requirements*.txt
 include contrib/deterministic-build/requirements*.txt
 include contrib/make_libsecp256k1.sh
+include contrib/make_libsparkmobile.sh
 include contrib/build_tools_util.sh
 
 graft electrum_firo

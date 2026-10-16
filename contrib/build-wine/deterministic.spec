@@ -73,6 +73,7 @@ binaries += [('C:/Python38/libusb-1.0.dll', '.')]
 binaries += [('C:/x11_hash/libx11hash-0.dll', '.')]
 binaries += [('C:/libsecp256k1/libsecp256k1-0.dll', '.')]
 binaries += [('C:/zbarw/libzbar-0.dll', '.')]
+binaries += [('C:/libsparkmobile/electrum_libsparkmobile.dll', '.')]
 
 # Workaround for "Retro Look":
 binaries += [b for b in collect_dynamic_libs('PyQt5') if 'qwindowsvista' in b[0]]
