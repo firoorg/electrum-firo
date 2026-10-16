@@ -45,6 +45,19 @@ try:
     btchip.setAlternateCoinVersions = setAlternateCoinVersions
     BTCHIP = True
     BTCHIP_DEBUG = False
+
+    class LoggingHIDDongleHIDAPI(HIDDongleHIDAPI):
+        """Logs every APDU exchanged with the device at debug level."""
+        def exchange(self, apdu, timeout=20000):
+            _logger.debug(f'ledger apdu => {bytes(apdu).hex()}')
+            try:
+                response = super().exchange(apdu, timeout)
+            except BTChipException as e:
+                sw = f'{e.sw:04x}' if isinstance(e.sw, int) else e.sw
+                _logger.debug(f'ledger apdu <= error sw={sw} ({e.message})')
+                raise
+            _logger.debug(f'ledger apdu <= {bytes(response).hex()} sw=9000')
+            return response
 except ImportError as e:
     if not (isinstance(e, ModuleNotFoundError) and e.name == 'btchip'):
         _logger.exception('error importing ledger plugin deps')
@@ -452,10 +465,13 @@ class Ledger_KeyStore(Hardware_KeyStore):
             if e.sw == 0x6a80:
                 self.give_error("Unfortunately, this message cannot be signed by the Ledger wallet. Only alphanumerical messages shorter than 140 characters are supported. Please remove any extra characters (tab, carriage return) and retry.")
             elif e.sw == 0x6985:  # cancelled by user
+                self.logger.info(f'sign_message: rejected on device (sw={e.sw:04x})')
+                self.handler.show_error(_('Signing was rejected by your Ledger device (error 6985).'))
                 return b''
             elif e.sw == 0x6982:
                 raise  # pin lock. decorator will catch it
             else:
+                self.logger.exception(f'sign_message: device error (sw={e.sw:04x})')
                 self.give_error(e, True)
         except UserWarning:
             self.handler.show_error(_('Cancelled by user'))
@@ -642,8 +658,14 @@ class Ledger_KeyStore(Hardware_KeyStore):
             self.handler.show_error(_('Cancelled by user'))
             return
         except BTChipException as e:
-            if e.sw in (0x6985, 0x6d00):  # cancelled by user
+            if e.sw == 0x6985:  # cancelled by user
+                self.logger.info(f'sign_transaction: rejected on device (sw={e.sw:04x})')
+                self.handler.show_error(_('Signing was rejected by your Ledger device (error 6985).'))
                 return
+            elif e.sw == 0x6d00:
+                self.logger.exception(f'sign_transaction: instruction not supported (sw={e.sw:04x})')
+                self.give_error(_('Your Ledger device rejected the signing request (error 6d00). '
+                                  'Make sure the Firo app is open on the device and Ledger Live is closed.'), True)
             elif e.sw == 0x6982:
                 raise  # pin lock. decorator will catch it
             else:
@@ -799,7 +821,7 @@ class LedgerPlugin(HW_PluginBase):
         dev = hid.device()
         dev.open_path(device.path)
         dev.set_nonblocking(True)
-        return HIDDongleHIDAPI(dev, ledger, BTCHIP_DEBUG)
+        return LoggingHIDDongleHIDAPI(dev, ledger, BTCHIP_DEBUG)
 
     @runs_in_hwd_thread
     def create_client(self, device, handler):
