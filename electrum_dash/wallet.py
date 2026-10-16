@@ -2940,7 +2940,10 @@ class Standard_Wallet(Simple_Deterministic_Wallet):
     def can_use_spark(self) -> bool:
         ks = self.keystore
         return (isinstance(ks, keystore.BIP32_KeyStore)
-                and not ks.is_watching_only())
+                and not ks.is_watching_only()
+                and not ks.has_seed()
+                and self.db.get('seed_type') == 'bip39'
+                and ks.get_derivation_prefix() == keystore.bip44_derivation(0))
 
     def pubkeys_to_address(self, pubkeys):
         pubkey = pubkeys[0]

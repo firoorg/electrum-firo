@@ -74,8 +74,9 @@ from electrum_firo.invoices import PR_PAID, PR_FAILED, pr_expiration_values, Onc
 from electrum_firo.transaction import (Transaction, PartialTxInput,
                                        PartialTransaction, PartialTxOutput)
 from electrum_firo.util import AddTransactionException
-from electrum_firo.wallet import (Multisig_Wallet, Abstract_Wallet,
+from electrum_firo.wallet import (Multisig_Wallet, Abstract_Wallet, Standard_Wallet,
                                   sweep_preparations, InternalAddressCorruption)
+from electrum_firo.keystore import bip44_derivation
 from electrum_firo.version import ELECTRUM_VERSION
 from electrum_firo.network import (Network, TxBroadcastError, BestEffortRequestFailed,
                                    UntrustedServerReturnedError, NetworkException)
@@ -1425,8 +1426,18 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
     def init_spark_session(self):
         from electrum_firo import libsparkmobile
-        if (not libsparkmobile.is_available()
-                or not self.wallet.can_use_spark()):
+        if not libsparkmobile.is_available():
+            return
+        if not self.wallet.can_use_spark():
+            if (isinstance(self.wallet, Standard_Wallet)
+                    and not self.wallet.is_watching_only()
+                    and not self.wallet.db.get('spark_bip39_notice_shown')):
+                self.wallet.db.put('spark_bip39_notice_shown', True)
+                self.show_message(_(
+                    'Spark is only available for wallets restored from a '
+                    'BIP39 seed with the standard derivation path {}, so that '
+                    'your Spark funds can also be recovered in other Firo '
+                    'wallets.').format(bip44_derivation(0)))
             return
 
         encrypted = self.wallet.has_keystore_encryption()

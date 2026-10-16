@@ -1123,6 +1123,9 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 if info:
                     groupIdBlockHashMap[str(groupId)] = info['blockHash']
 
+            if rawCoinsBySetId and not self.syncing:
+                self.syncing = True
+                util.trigger_callback('wallet_updated', self.wallet)
             for groupId, rows in rawCoinsBySetId.items():
                 found = await run_in_thread(
                     self._identify_sector, rows, groupId, view_key_hex)

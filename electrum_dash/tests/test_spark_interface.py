@@ -60,6 +60,20 @@ def _spark_coin(txid: str, value: int, serialized=ROW_BYTES, **kw) -> dict:
     return coin
 
 
+def _bip39_keystore(derivation=None):
+    root_seed = keystore.bip39_to_seed(SEED, '')
+    return keystore.from_bip43_rootseed(
+        root_seed, derivation or keystore.bip44_derivation(0), xtype='standard')
+
+
+def _wallet(ks, config, seed_type=None):
+    wallet = WalletIntegrityHelper.create_standard_wallet(
+        ks, gap_limit=2, config=config)
+    if seed_type:
+        wallet.db.put('seed_type', seed_type)
+    return wallet
+
+
 def _run(coro):
     loop = asyncio.new_event_loop()
     try:
@@ -84,9 +98,7 @@ class TestSparkWallet(TestCaseForTestnet):
         patcher = mock.patch.object(Abstract_Wallet, 'save_db')
         patcher.start()
         self.addCleanup(patcher.stop)
-        ks = keystore.from_seed(SEED, '', False)
-        self.wallet = WalletIntegrityHelper.create_standard_wallet(
-            ks, gap_limit=2, config=self.config)
+        self.wallet = _wallet(_bip39_keystore(), self.config, 'bip39')
         self.wallet.spark_enabled = True
         self.wallet.db.put('stored_height', 200)
 
@@ -98,8 +110,17 @@ class TestSparkWallet(TestCaseForTestnet):
         self.wallet.add_unverified_tx(funding.txid(), 100)
         return funding
 
-    def test_can_use_spark_only_for_single_bip32_software_keystore(self):
+    def test_can_use_spark_only_for_bip39_wallets_on_the_standard_path(self):
         self.assertTrue(self.wallet.can_use_spark())
+        electrum_seed = _wallet(keystore.from_seed(SEED, '', False), self.config)
+        self.assertFalse(electrum_seed.can_use_spark())
+        other_path = _wallet(_bip39_keystore("m/44'/1'/1'"), self.config, 'bip39')
+        self.assertFalse(other_path.can_use_spark())
+        xprv = _wallet(keystore.from_xprv(
+            self.wallet.keystore.get_master_private_key(None)), self.config)
+        self.assertFalse(xprv.can_use_spark())
+        with self.assertRaises(RuntimeError):
+            electrum_seed.derive_spark_key(None)
         imported = WalletIntegrityHelper.create_imported_wallet(
             config=self.config, privkeys=True)
         self.assertFalse(imported.can_use_spark())
