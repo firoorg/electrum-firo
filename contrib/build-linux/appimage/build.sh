@@ -54,7 +54,7 @@ appdir_python() {
   env \
     PYTHONNOUSERSITE=1 \
     LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH+:$LD_LIBRARY_PATH}" \
-    "$APPDIR/usr/bin/python3.7" "$@"
+    "$APPDIR/usr/bin/python3.8" "$@"
 }
 python='appdir_python'
 
@@ -72,7 +72,7 @@ info "installing electrum and its dependencies."
 # note: we prefer compiling C extensions ourselves, instead of using binary wheels,
 #       hence "--no-binary :all:" flags. However, we specifically allow
 #       - PyQt5, as it's harder to build from source
-#       - cryptography, as building it would need openssl 1.1, not available on ubuntu 16.04
+#       - cryptography, to avoid building it from source.
 "$python" -m pip install --no-dependencies --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements.txt"
 "$python" -m pip install --no-dependencies --no-binary :all: --only-binary PyQt5,PyQt5-Qt5,cryptography --no-warn-script-location \
@@ -112,7 +112,7 @@ info "finalizing AppDir."
     move_lib
 
     # apply global appimage blacklist to exclude stuff
-    # move usr/include out of the way to preserve usr/include/python3.7m.
+    # move usr/include out of the way to preserve usr/include/python3.8.
     mv usr/include usr/include.tmp
     delete_blacklisted
     mv usr/include.tmp usr/include
@@ -135,7 +135,7 @@ strip_binaries()
 {
   chmod u+w -R "$APPDIR"
   {
-    printf '%s\0' "$APPDIR/usr/bin/python3.7"
+    printf '%s\0' "$APPDIR/usr/bin/python3.8"
     find "$APPDIR" -type f -regex '.*\.so\(\.[0-9.]+\)?$' -print0
   } | xargs -0 --no-run-if-empty --verbose strip -R .note.gnu.build-id -R .comment
 }
@@ -150,11 +150,11 @@ remove_emptydirs
 
 info "removing some unneeded stuff to decrease binary size."
 rm -rf "$APPDIR"/usr/{share,include}
-PYDIR="$APPDIR"/usr/lib/python3.7
+PYDIR="$APPDIR"/usr/lib/python3.8
 rm -rf "$PYDIR"/{test,ensurepip,lib2to3,idlelib,turtledemo}
 rm -rf "$PYDIR"/{ctypes,sqlite3,tkinter,unittest}/test
 rm -rf "$PYDIR"/distutils/{command,tests}
-rm -rf "$PYDIR"/config-3.7m-x86_64-linux-gnu
+rm -rf "$PYDIR"/config-3.8-x86_64-linux-gnu
 rm -rf "$PYDIR"/site-packages/{opt,pip,setuptools,wheel}
 rm -rf "$PYDIR"/site-packages/Cryptodome/SelfTest
 rm -rf "$PYDIR"/site-packages/{psutil,qrcode,websocket}/tests
