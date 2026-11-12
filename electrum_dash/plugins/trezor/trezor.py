@@ -29,7 +29,7 @@ try:
     from .clientbase import TrezorClientBase
 
     from trezorlib.messages import (
-        Capability, BackupType, RecoveryDeviceType, HDNodeType, HDNodePathType,
+        Capability, BackupType, RecoveryDeviceInputMethod as RecoveryDeviceType, HDNodeType, HDNodePathType,
         InputScriptType, OutputScriptType, MultisigRedeemScriptType,
         TxInputType, TxOutputType, TxOutputBinType, TransactionType, SignTx)
 
@@ -118,8 +118,9 @@ class TrezorPlugin(HW_PluginBase):
     libraries_URL = 'https://pypi.org/project/trezor/'
     minimum_firmware = (1, 5, 2)
     keystore_class = TrezorKeyStore
-    minimum_library = (0, 12, 0)
-    maximum_library = (0, 13)
+    # Safe 3 rev. B reports the T3B1 model identifier, supported since 0.13.10.
+    minimum_library = (0, 13, 10)
+    maximum_library = (0, 14)
     #SUPPORTED_XTYPES = ('standard', )
     SUPPORTED_XTYPES = ('standard', 'p2wpkh-p2sh', 'p2wpkh', 'p2wsh-p2sh', 'p2wsh')
     DEVICE_IDS = (TREZOR_PRODUCT_KEY,)
@@ -145,6 +146,12 @@ class TrezorPlugin(HW_PluginBase):
             return version
         else:
             raise LibraryFoundButUnusable(library_version=version)
+
+    def get_library_not_available_message(self) -> str:
+        message = super().get_library_not_available_message()
+        message += '\n' + _("For Trezor Safe 3, install a compatible library with:") + '\n'
+        message += f'"{sys.executable}" -m pip install "trezor[hidapi]>=0.13.10,<0.14"'
+        return message
 
     @runs_in_hwd_thread
     def is_bridge_available(self) -> bool:
