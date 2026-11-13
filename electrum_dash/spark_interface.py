@@ -733,6 +733,12 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             self.syncing = True
             util.trigger_callback('wallet_updated', self.wallet)
 
+        blockHeight = None
+        if size:
+            anchor_row = await self._fetch_sectors(
+                groupId, blockHash, 1, start_index=0)
+            blockHeight = await self._verify_set_block(blockHash, anchor_row[0])
+
         rows = []
         if numberOfCoinsToFetch > 0:
             rows = await self._fetch_sectors(
@@ -740,7 +746,6 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 start_index=prevSize)
 
         if rows:
-            blockHeight = await self._verify_set_block(blockHash, rows[0])
             if rawCoinsBySetId is not None:
                 rawCoinsBySetId[groupId] = rows
             version_coins = list(reversed(rows))

@@ -330,6 +330,46 @@ class TestSparkHelpers(TestCaseForTestnet):
         self.assertEqual([(4, 7), (7, 9)], requested)
         self.assertEqual(5, len(rows))
 
+    def test_set_update_verifies_anchor_not_first_new_coin(self):
+        wallet = mock.Mock()
+        sync = _sync_for(wallet)
+        sync.syncing = False
+        old_block_hash = base64.b64encode(b'\x01' * 32).decode()
+        block_hash = base64.b64encode(b'\x02' * 32).decode()
+        anchor_row = ['anchor-coin', 'anchor-txid', 'anchor-context']
+        new_row = ['new-coin', 'new-txid', 'new-context']
+        requests = []
+        sync._request = mock.AsyncMock(return_value={
+            'blockHash': block_hash,
+            'setHash': base64.b64encode(b'\x03' * 32).decode(),
+            'size': 5,
+        })
+
+        async def fetch_sectors(group_id, current_block_hash, count,
+                                start_index=0):
+            requests.append((start_index, count))
+            return [anchor_row] if start_index == 0 else [new_row]
+
+        sync._fetch_sectors = fetch_sectors
+        sync._verify_set_block = mock.AsyncMock(return_value=120)
+        anon_sets = {'1': {'versions': [{
+            'block_hash': old_block_hash,
+            'block_height': 100,
+            'set_hash': old_block_hash,
+            'size': 4,
+            'coins': [['old-coin', 'old-txid', 'old-context']],
+        }]}}
+        groups = {}
+
+        with mock.patch('electrum_firo.spark_interface.util.trigger_callback'):
+            _run(sync.runFetchAndUpdateSparkAnonSetCacheForGroupId(
+                1, anon_sets, {}, groups))
+
+        self.assertEqual([(0, 1), (4, 1)], requests)
+        sync._verify_set_block.assert_awaited_once_with(
+            block_hash, anchor_row)
+        self.assertEqual(120, anon_sets['1']['versions'][-1]['block_height'])
+
     def test_tx_contains_spark_coin(self):
         tx = Transaction(_raw_tx(
             [('aa' * 32, 0)], [(MINT_SCRIPT, 1)]))
