@@ -11,6 +11,7 @@ from electrum_firo.bitcoin import hash160_to_exp2pkh, hash160_to_p2pkh
 from electrum_firo.interface import NotificationSession
 from electrum_firo.spark_interface import (
     MAX_SPARK_GROUP_ID, MAX_SPARK_SET_SIZE, OP_SPARKMINT,
+    SPARK_CHAUM_V2_START_HEIGHT,
     SPEND_MISSING_CHECKS_BEFORE_RELEASE, SparkServerMisbehaving,
     SparkSharedCache, SparkSynchronizer, _is_tx_not_found_error,
     _parse_group_id, _parse_set_meta, _tx_contains_spark_coin,
@@ -135,6 +136,31 @@ class TestSparkWallet(TestCaseForTestnet):
     def test_no_password_or_spend_key_kept_on_wallet(self):
         self.assertFalse(hasattr(self.wallet, 'spark_password'))
         self.assertFalse(hasattr(self.wallet, 'spark_key_data'))
+
+    def test_spark_send_is_rejected_before_v2_activation(self):
+        with mock.patch.object(self.wallet, 'get_local_height',
+                               return_value=210_798), \
+                mock.patch.object(self.wallet, 'derive_spark_key') as derive:
+            with self.assertRaisesRegex(RuntimeError, 'not active'):
+                self.wallet.prepareSendSpark(
+                    password=None, address='unused', amount=1)
+        derive.assert_not_called()
+        with mock.patch.object(self.wallet, 'get_local_height',
+                               return_value=210_799):
+            self.wallet._ensure_spark_send_supported()
+
+    def test_spark_send_is_enabled_after_v2_activation_on_each_network(self):
+        self.assertEqual(
+            {'mainnet', 'testnet', 'devnet', 'regtest'},
+            set(SPARK_CHAUM_V2_START_HEIGHT))
+        for network, activation_height in SPARK_CHAUM_V2_START_HEIGHT.items():
+            with mock.patch(
+                    'electrum_firo.spark_interface.constants.net.NET_NAME',
+                    network), \
+                    mock.patch.object(
+                        self.wallet, 'get_local_height',
+                        return_value=activation_height - 1):
+                self.wallet._ensure_spark_send_supported()
 
     def test_self_mint_history_shows_only_fee(self):
         funding = self._fund(10 * 10**8)
@@ -272,7 +298,8 @@ class TestSparkWallet(TestCaseForTestnet):
         self.assertFalse(is_exchange_address(hash160_to_p2pkh(bytes(20))))
         self.wallet.db.put('spark_coins', {'c': _spark_coin(
             'ef' * 32, 10**8, height=1, tx_checked=True, l_tag_hash='c')})
-        with mock.patch('electrum_firo.spark_interface._createSparkSend') as proof, \
+        with mock.patch.object(self.wallet, '_ensure_spark_send_supported'), \
+                mock.patch('electrum_firo.spark_interface._createSparkSend') as proof, \
                 mock.patch('electrum_firo.libsparkmobile.is_valid_spark_address',
                            return_value=False) as validate_spark_address:
             with self.assertRaises(ValueError) as ctx:
@@ -284,6 +311,24 @@ class TestSparkWallet(TestCaseForTestnet):
 
 
 class TestSparkHelpers(TestCaseForTestnet):
+
+    def test_sector_fetch_starts_after_cached_prefix(self):
+        sync = _sync_for(mock.Mock())
+        sync.sectorSize = 3
+        requested = []
+
+        async def request(method, params=(), timeout=120):
+            start, end = map(int, params[2:])
+            requested.append((start, end))
+            return {'coins': [['coin', 'txid', 'context']
+                              for _ in range(end - start)]}
+
+        sync._request = request
+        rows = _run(sync._fetch_sectors(
+            1, 'block-hash', 5, start_index=4))
+
+        self.assertEqual([(4, 7), (7, 9)], requested)
+        self.assertEqual(5, len(rows))
 
     def test_tx_contains_spark_coin(self):
         tx = Transaction(_raw_tx(

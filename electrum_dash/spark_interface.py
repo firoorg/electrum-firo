@@ -38,6 +38,13 @@ MAX_SPARK_SET_SIZE = 32_768
 MAX_SPARK_GROUP_ID = 100_000
 MAX_SPARK_GROUPS_PER_REFRESH = 4
 SPARK_COIN_CHECK_VERSION = 2
+# Must match nSparkChaumV2StartBlock in Firo Core's chainparams.cpp.
+SPARK_CHAUM_V2_START_HEIGHT = {
+    'mainnet': 1_371_000,
+    'testnet': 210_800,
+    'devnet': 3_700,
+    'regtest': 700,
+}
 
 
 class SparkServerMisbehaving(GracefulDisconnect):
@@ -631,10 +638,12 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         finally:
             libsparkmobile.delete_full_view_key(view_key)
 
-    async def _fetch_sectors(self, groupId, blockHash, numberOfCoinsToFetch):
+    async def _fetch_sectors(self, groupId, blockHash, numberOfCoinsToFetch,
+                             start_index=0):
         rows = []
-        for start in range(0, numberOfCoinsToFetch, self.sectorSize):
-            end = min(start + self.sectorSize, numberOfCoinsToFetch)
+        end_index = start_index + numberOfCoinsToFetch
+        for start in range(start_index, end_index, self.sectorSize):
+            end = min(start + self.sectorSize, end_index)
             response = await self._request(
                 'spark.getsparkanonymitysetsector',
                 (str(groupId), blockHash, str(start), str(end)))
@@ -727,7 +736,8 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         rows = []
         if numberOfCoinsToFetch > 0:
             rows = await self._fetch_sectors(
-                groupId, blockHash, numberOfCoinsToFetch)
+                groupId, blockHash, numberOfCoinsToFetch,
+                start_index=prevSize)
 
         if rows:
             blockHeight = await self._verify_set_block(blockHash, rows[0])
@@ -1707,6 +1717,7 @@ class SparkInterfaceMixin:
                          **kwargs) -> PartialTransaction:
         if not self.spark_enabled:
             raise RuntimeError(_('Spark is disabled for this session'))
+        self._ensure_spark_send_supported()
         if not libsparkmobile.is_available():
             raise RuntimeError('electrum_libsparkmobile is not available')
         key_data = self.derive_spark_key(password)
@@ -1715,6 +1726,14 @@ class SparkInterfaceMixin:
         finally:
             del key_data
 
+    def _ensure_spark_send_supported(self) -> None:
+        activation_height = SPARK_CHAUM_V2_START_HEIGHT.get(
+            constants.net.NET_NAME)
+        if (activation_height is None
+                or self.get_local_height() + 1 < activation_height):
+            raise RuntimeError(_(
+                'Spark V2 sends are not active on this network yet'))
+
     def _prepareSendSpark(
             self, key_data: bytes, *,
             recipients: Sequence[Tuple[str, int]] = None,
@@ -1722,6 +1741,7 @@ class SparkInterfaceMixin:
             address: str = None,
             amount=None,
             memo: str = '') -> PartialTransaction:
+        self._ensure_spark_send_supported()
         transparentRecipients = list(recipients or [])
         privateSparkRecipients = list(sparkRecipients or [])
         if address is not None:

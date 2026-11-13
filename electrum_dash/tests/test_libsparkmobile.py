@@ -109,6 +109,19 @@ def _infinity_address(network: int = ADDRESS_NETWORK_MAINNET) -> str:
     return _bech32m_encode(hrp, _convertbits(scrambled, 8, 5, True))
 
 
+class TestLibsparkmobilePythonGuards(ElectrumTestCase):
+
+    def test_spend_coin_rejects_non_binary_fields_before_ctypes_copy(self):
+        coin = {
+            'serialized_coin': object(),
+            'context': b'\x00',
+            'group_id': 1,
+            'height': 1,
+        }
+        with self.assertRaisesRegex(ValueError, 'spark coin data must be bytes'):
+            libsparkmobile._make_spend_coins([coin], [])
+
+
 @unittest.skipUnless(libsparkmobile.is_available(),
                      'electrum_libsparkmobile is not built')
 class TestLibsparkmobileAddresses(ElectrumTestCase):
