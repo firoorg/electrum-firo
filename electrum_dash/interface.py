@@ -34,6 +34,7 @@ from typing import Tuple, Union, List, TYPE_CHECKING, Optional, Set, NamedTuple,
 from collections import defaultdict
 from ipaddress import IPv4Network, IPv6Network, ip_address, IPv6Address, IPv4Address
 import itertools
+from contextlib import contextmanager
 import logging
 import hashlib
 import functools
@@ -71,6 +72,7 @@ ca_path = certifi.where()
 BUCKET_NAME_OF_ONION_SERVERS = 'onion'
 
 MAX_INCOMING_MSG_SIZE = 2_000_000  # in bytes
+SPARK_MAX_INCOMING_MSG_SIZE = 64_000_000
 
 _KNOWN_NETWORK_PROTOCOLS = {'t', 's'}
 PREFERRED_NETWORK_PROTOCOL = 's'
@@ -143,6 +145,8 @@ class NotificationSession(RPCSession):
         self._msg_counter = itertools.count(start=1)
         self.interface = interface
         self.cost_hard_limit = 0  # disable aiorpcx resource limits
+        self._extended_timeouts = []
+        self._base_request_timeout = None
 
     async def handle_request(self, request):
         self.maybe_log(f"--> {request}")
@@ -183,8 +187,29 @@ class NotificationSession(RPCSession):
             return response
 
     def set_default_timeout(self, timeout):
-        self.sent_request_timeout = timeout
         self.max_send_delay = timeout
+        if self._extended_timeouts:
+            self._base_request_timeout = timeout
+            self.sent_request_timeout = max(timeout, *self._extended_timeouts)
+        else:
+            self.sent_request_timeout = timeout
+
+    @contextmanager
+    def extended_request_timeout(self, timeout: float):
+        if not self._extended_timeouts:
+            self._base_request_timeout = self.sent_request_timeout
+        self._extended_timeouts.append(timeout)
+        self.sent_request_timeout = max(self._base_request_timeout,
+                                        *self._extended_timeouts)
+        try:
+            yield
+        finally:
+            self._extended_timeouts.remove(timeout)
+            if self._extended_timeouts:
+                self.sent_request_timeout = max(self._base_request_timeout,
+                                                *self._extended_timeouts)
+            else:
+                self.sent_request_timeout = self._base_request_timeout
 
     async def subscribe(self, method: str, params: List, queue: asyncio.Queue):
         # note: until the cache is written for the first time,
@@ -220,6 +245,7 @@ class NotificationSession(RPCSession):
         # overridden so that max_size can be customized
         max_size = int(self.interface.network.config.get('network_max_incoming_msg_size',
                                                          MAX_INCOMING_MSG_SIZE))
+        max_size = max(max_size, SPARK_MAX_INCOMING_MSG_SIZE)
         return NewlineFramer(max_size=max_size)
 
 

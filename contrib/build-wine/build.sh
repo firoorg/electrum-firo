@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -ev
+
 source ./contrib/dash/travis/electrum_dash_version_env.sh;
 echo wine build version is $DASH_ELECTRUM_VERSION
 
@@ -16,6 +18,7 @@ fi
 export host_strip="${GCC_TRIPLET_HOST}-strip"
 
 ./contrib/build-wine/build_secp256k1.sh
+./contrib/build-wine/build_libsparkmobile.sh
 ./contrib/build-wine/build_x11_hash.sh
 ./contrib/build-wine/build_pyinstaller.sh
 
@@ -42,6 +45,13 @@ wine python -m pip install --no-dependencies --no-warn-script-location \
 wine pyinstaller --clean -y \
     --name electrum-firo-$DASH_ELECTRUM_VERSION.exe \
     deterministic.spec
+
+SPARK_SMOKE_DIR=$(mktemp -d "$WINEPREFIX/drive_c/spark_smoke.XXXX")
+cp "$WINEPREFIX/drive_c/libsparkmobile/electrum_libsparkmobile.dll" "$SPARK_SMOKE_DIR/"
+wine python -c "import ctypes, sys; ctypes.CDLL(sys.argv[1]).isValidSparkAddress; print('libsparkmobile dll loads')" \
+    "C:\\$(basename "$SPARK_SMOKE_DIR")\\electrum_libsparkmobile.dll" \
+    || { echo "packaged libsparkmobile dll cannot be loaded"; exit 1; }
+rm -rf "$SPARK_SMOKE_DIR"
 
 if [[ $WINEARCH == win32 ]]; then
     NSIS_EXE="$WINEPREFIX/drive_c/Program Files/NSIS/makensis.exe"

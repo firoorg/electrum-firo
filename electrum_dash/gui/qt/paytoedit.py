@@ -79,6 +79,7 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
         self.is_alias = False
         self.update_size()
         self.payto_scriptpubkey = None  # type: Optional[bytes]
+        self.spark_address = None
         self.lightning_invoice = None
         self.previous_payto = ''
 
@@ -148,6 +149,7 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
 
     def check_text(self):
         self.errors = []
+        self.spark_address = None
         if self.is_pr:
             return
         # filter out empty lines
@@ -164,6 +166,13 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
             if (data_l.startswith(FIRO_BIP21_URI_SCHEME + ':')
                     or data_l.startswith(PAY_BIP21_URI_SCHEME + ':')):
                 self.win.pay_to_URI(data)
+                return
+            spark_addr = (self._try_parse_spark_address(data)
+                          if self.win.wallet.spark_enabled else None)
+            if spark_addr:
+                self.spark_address = spark_addr
+                self.win.set_onchain(True)
+                self.win.lock_amount(False)
                 return
             # try "address, amount" on-chain format
             try:
@@ -210,6 +219,7 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
         self.win.max_button.setChecked(is_max)
         self.outputs = outputs
         self.payto_scriptpubkey = None
+        self.spark_address = None
 
         if self.win.max_button.isChecked():
             self.win.spend_max()
@@ -223,7 +233,28 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
     def get_destination_scriptpubkey(self) -> Optional[bytes]:
         return self.payto_scriptpubkey
 
+    def get_spark_address(self) -> Optional[str]:
+        return self.spark_address
+
+    @staticmethod
+    def _try_parse_spark_address(text: str) -> Optional[str]:
+        addr = text.strip()
+        if not addr or ',' in addr or ' ' in addr:
+            return None
+        try:
+            from electrum_firo import libsparkmobile, constants
+            if not libsparkmobile.is_available():
+                return None
+            if libsparkmobile.is_valid_spark_address(
+                    addr, is_testnet=bool(constants.net.TESTNET)):
+                return addr
+        except Exception:
+            pass
+        return None
+
     def get_outputs(self, is_max):
+        if self.spark_address:
+            return []
         if self.payto_scriptpubkey:
             if is_max:
                 amount = '!'

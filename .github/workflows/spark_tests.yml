@@ -1,0 +1,40 @@
+name: Spark tests
+
+
+on:
+  push:
+    branches:
+    - '*'
+  pull_request:
+    branches:
+    - '*'
+
+jobs:
+  spark_tests:
+    runs-on: ubuntu-22.04
+    name: Spark ABI and wallet tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libsecp256k1-dev
+      - name: Build libsparkmobile
+        run: ./contrib/make_libsparkmobile.sh
+      - name: Install python dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          python -m pip install -r contrib/requirements/requirements.txt
+          python -m pip install -r contrib/requirements/requirements-tests.txt
+      - name: Run Spark tests
+        env:
+          ELECTRUM_REQUIRE_LIBSPARKMOBILE: '1'
+        run: |
+          python -m unittest -v \
+            electrum_dash.tests.test_libsparkmobile \
+            electrum_dash.tests.test_spark_interface

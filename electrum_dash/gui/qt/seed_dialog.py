@@ -35,6 +35,7 @@ from electrum_firo.i18n import _
 from electrum_firo.mnemonic import Mnemonic, seed_type
 from electrum_firo import old_mnemonic
 from electrum_firo import slip39
+from electrum_firo.keystore import bip44_derivation
 
 from .util import (Buttons, OkButton, WWLabel, ButtonsTextEdit, icon_path,
                    EnterButton, CloseButton, WindowModalDialog, ColorScheme,
@@ -91,11 +92,8 @@ class SeedLayout(QVBoxLayout):
                 self.on_edit()
                 if self.seed_type == 'bip39':
                     msg = ' '.join([
-                        '<b>' + _('Warning') + ':</b>  ',
-                        _('BIP39 seeds can be imported in Firo Electrum, so that users can access funds locked in other wallets.'),
-                        _('However, we do not generate BIP39 seeds, because they do not meet our safety standard.'),
-                        _('BIP39 seeds do not include a version number, which compromises compatibility with future software.'),
-                        _('We do not guarantee that BIP39 imports will always be supported in Firo Electrum.'),
+                        _('BIP39 seeds from other Firo wallets can be restored in Firo Electrum.'),
+                        _('Keep the default derivation path {} to use Spark.').format(bip44_derivation(0)),
                     ])
                 elif self.seed_type == 'slip39':
                     msg = ' '.join([
