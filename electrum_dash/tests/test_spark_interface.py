@@ -274,11 +274,12 @@ class TestSparkWallet(TestCaseForTestnet):
             'ef' * 32, 10**8, height=1, tx_checked=True, l_tag_hash='c')})
         with mock.patch('electrum_firo.spark_interface._createSparkSend') as proof, \
                 mock.patch('electrum_firo.libsparkmobile.is_valid_spark_address',
-                           return_value=False):
+                           return_value=False) as validate_spark_address:
             with self.assertRaises(ValueError) as ctx:
                 self.wallet._prepareSendSpark(
                     bytes(32), address=exchange, amount=1000)
             proof.assert_not_called()
+        self.assertEqual(1, validate_spark_address.call_count)
         self.assertIn('exchange address', str(ctx.exception))
 
 

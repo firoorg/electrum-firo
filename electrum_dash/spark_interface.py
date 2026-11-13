@@ -85,9 +85,9 @@ def _deepcopy_db_val(val):
 
 def _ffi_spend_coins(coins) -> List[dict]:
     return [{
-        'serializedCoin': c['serialized_coin'],
-        'serializedCoinContext': c.get('context') or c.get('serial_context'),
-        'groupId': int(c['group_id']),
+        'serialized_coin': c['serialized_coin'],
+        'context': c.get('context') or c.get('serial_context'),
+        'group_id': int(c['group_id']),
         'height': int(c['height']),
     } for c in coins]
 
@@ -208,12 +208,6 @@ def _createSparkSend(*, privateKeyHex: bytes, index: int,
          bool(r['subtractFeeFromAmount']))
         for r in privateRecipients
     ]
-    spend_coins = [{
-        'serialized_coin': c['serializedCoin'],
-        'context': c['serializedCoinContext'],
-        'group_id': int(c['groupId']),
-        'height': int(c['height']),
-    } for c in serializedCoins]
     anonymity_sets = [{
         'set_id': int(a['setId']),
         'set_hash': a['setHash'],
@@ -225,7 +219,7 @@ def _createSparkSend(*, privateKeyHex: bytes, index: int,
         privateKeyHex,
         recipients=ffi_recipients,
         private_recipients=ffi_private,
-        coins=spend_coins,
+        coins=serializedCoins,
         anonymity_sets=anonymity_sets,
         id_and_block_hashes=id_and_block_hashes,
         tx_hash=txHash,
@@ -238,17 +232,11 @@ def _asyncSparkFeesWrapper(*, privateKeyHex: bytes, index: int, sendAmount: int,
                            subtractFeeFromAmount: bool, serializedCoins,
                            privateRecipientsCount: int, utxoNum: int,
                            additionalTxSize: int = 0) -> int:
-    coins = [{
-        'serialized_coin': c['serializedCoin'],
-        'context': c['serializedCoinContext'],
-        'group_id': int(c['groupId']),
-        'height': int(c['height']),
-    } for c in serializedCoins]
     return libsparkmobile.estimate_spark_fee(
         privateKeyHex,
         send_amount=sendAmount,
         subtract_fee_from_amount=subtractFeeFromAmount,
-        coins=coins,
+        coins=serializedCoins,
         private_recipients_count=privateRecipientsCount,
         utxo_num=utxoNum,
         additional_tx_size=additionalTxSize,
@@ -1743,8 +1731,7 @@ class SparkInterfaceMixin:
                 address, is_testnet=bool(constants.net.TESTNET))
             if not is_spark_dest and not is_address(address):
                 raise ValueError(_('Invalid Address'))
-            if libsparkmobile.is_valid_spark_address(
-                    address, is_testnet=bool(constants.net.TESTNET)):
+            if is_spark_dest:
                 privateSparkRecipients.append(
                     (address, amount if amount != '!' else 0, memo or ''))
             else:
