@@ -37,6 +37,7 @@ SPEND_MISSING_CHECKS_BEFORE_RELEASE = 3
 MAX_SPARK_SET_SIZE = 32_768
 MAX_SPARK_GROUP_ID = 100_000
 MAX_SPARK_GROUPS_PER_REFRESH = 4
+SPARK_SET_CACHE_VERSION = 2
 SPARK_COIN_CHECK_VERSION = 2
 # Must match nSparkChaumV2StartBlock in Firo Core's chainparams.cpp.
 SPARK_CHAUM_V2_START_HEIGHT = {
@@ -720,7 +721,11 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             raise SparkServerMisbehaving(
                 f'spark group {groupId} shrank from {prevSize} to {size}')
 
-        if prevMeta and prevMeta['blockHash'] == blockHash:
+        entry = FiroCacheCoordinator._entry(
+            self.wallet.db, groupId, anon_sets=anon_sets)
+        cache_version = (entry or {}).get('cache_version')
+        if (prevMeta and prevMeta['blockHash'] == blockHash
+                and cache_version == SPARK_SET_CACHE_VERSION):
             groups[str(groupId)] = {
                 'block_hash': blockHash,
                 'set_hash': setHash,
@@ -728,42 +733,46 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             }
             return coins
 
-        numberOfCoinsToFetch = size - prevSize
+        rebuild = prevMeta is not None and (
+            cache_version != SPARK_SET_CACHE_VERSION or size == prevSize)
+        numberOfCoinsToFetch = size if rebuild else size - prevSize
         if numberOfCoinsToFetch > 0 and not self.syncing:
             self.syncing = True
             util.trigger_callback('wallet_updated', self.wallet)
 
         blockHeight = None
-        if size:
-            anchor_row = await self._fetch_sectors(
-                groupId, blockHash, 1, start_index=0)
-            blockHeight = await self._verify_set_block(blockHash, anchor_row[0])
-
         rows = []
         if numberOfCoinsToFetch > 0:
             rows = await self._fetch_sectors(
                 groupId, blockHash, numberOfCoinsToFetch,
-                start_index=prevSize)
-
+                start_index=0)
         if rows:
+            blockHeight = await self._verify_set_block(blockHash, rows[0])
+        elif size:
+            anchor_row = await self._fetch_sectors(
+                groupId, blockHash, 1, start_index=0)
+            blockHeight = await self._verify_set_block(blockHash, anchor_row[0])
+
+        if rows or rebuild:
             if rawCoinsBySetId is not None:
                 rawCoinsBySetId[groupId] = rows
             version_coins = list(reversed(rows))
-            entry = FiroCacheCoordinator._entry(
-                self.wallet.db, groupId, anon_sets=anon_sets)
-            versions = list((entry or {}).get('versions') or [])
-            versions.append({
-                'block_hash': blockHash,
-                'block_height': blockHeight,
-                'set_hash': setHash,
-                'size': size,
-                'coins': version_coins,
-            })
+            versions = (
+                [] if rebuild else list((entry or {}).get('versions') or []))
+            if rows:
+                versions.append({
+                    'block_hash': blockHash,
+                    'block_height': blockHeight,
+                    'set_hash': setHash,
+                    'size': size,
+                    'coins': version_coins,
+                })
             anon_sets[str(groupId)] = {
                 'block_hash': blockHash,
                 'set_hash': setHash,
                 'size': size,
                 'versions': versions,
+                'cache_version': SPARK_SET_CACHE_VERSION,
             }
 
         groups[str(groupId)] = {
