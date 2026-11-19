@@ -7,7 +7,7 @@ LABEL description="Building Electrum Firo appimage for Linux"
 ENV LC_ALL=C.UTF-8 LANG=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list && \
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list && \
     apt-get -o Acquire::Retries=3 update -q && \
     apt-get install -qy \
         git \
