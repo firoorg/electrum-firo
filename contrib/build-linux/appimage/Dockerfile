@@ -7,9 +7,11 @@ LABEL description="Building Electrum Firo appimage for Linux"
 ENV LC_ALL=C.UTF-8 LANG=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN sed -i 's|http://|https://|g' /etc/apt/sources.list && \
+RUN apt-get -o Acquire::Retries=3 update -q && \
+    apt-get -o Acquire::Retries=3 install -qy --no-install-recommends ca-certificates && \
+    sed -i 's|http://|https://|g' /etc/apt/sources.list && \
     apt-get -o Acquire::Retries=3 update -q && \
-    apt-get install -qy \
+    apt-get -o Acquire::Retries=3 install -qy \
         git \
         wget \
         make \
