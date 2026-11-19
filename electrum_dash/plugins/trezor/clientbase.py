@@ -214,15 +214,16 @@ class TrezorClientBase(HardwareClientBase, Logger):
         return self.client.version >= self.plugin.minimum_firmware
 
     def get_trezor_model(self):
-        return trezorlib.models.detect(self.features).name
+        """Return the stable internal model identifier used by trezorlib."""
+        return trezorlib.models.detect(self.features).internal_name
 
     def device_model_name(self):
         model = self.get_trezor_model()
-        if model == '1':
+        if model == 'T1B1':
             return "Trezor One"
-        elif model == 'T':
+        elif model == 'T2T1':
             return "Trezor T"
-        elif model == "Safe 3":
+        elif model in ("T2B1", "T3B1"):
             return "Trezor Safe 3"
         return None
 

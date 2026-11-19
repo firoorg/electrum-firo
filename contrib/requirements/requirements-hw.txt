@@ -1,5 +1,6 @@
 hidapi
 trezor[hidapi]>=0.13.10,<0.14
+typing-extensions>=4.0.0
 safet>=0.1.5
 keepkey>=6.3.1
 btchip-python>=0.1.32

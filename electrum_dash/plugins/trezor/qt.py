@@ -329,7 +329,7 @@ class QtPlugin(QtPluginBase):
             rb.setChecked(True)
 
         def configure_word_counts():
-            if model == "1":
+            if model == "T1B1":
                 checked_wordcount = 24
             else:
                 checked_wordcount = 12
@@ -358,7 +358,7 @@ class QtPlugin(QtPluginBase):
         # 1. backup_type is only visible when creating new seed
         gb_backuptype.setVisible(method == TIM_NEW)
         # 2. word_count is not visible when recovering on TT
-        if method == TIM_RECOVER and model != "1":
+        if method == TIM_RECOVER and model != "T1B1":
             gb_numwords.setVisible(False)
 
         # PIN
@@ -393,7 +393,7 @@ class QtPlugin(QtPluginBase):
 
         # ask for recovery type (random word order OR matrix)
         bg_rectype = None
-        if method == TIM_RECOVER and model == '1':
+        if method == TIM_RECOVER and model == "T1B1":
             gb_rectype = QGroupBox()
             hbox_rectype = QHBoxLayout()
             gb_rectype.setLayout(hbox_rectype)
@@ -419,8 +419,8 @@ class QtPlugin(QtPluginBase):
         if method == TIM_NEW:
             cb_no_backup = QCheckBox(f'''{_('Enable seedless mode')}''')
             cb_no_backup.setChecked(False)
-            if (model == '1' and fw_version >= (1, 7, 1)
-                    or model == 'T' and fw_version >= (2, 0, 9)):
+            if (model == "T1B1" and fw_version >= (1, 7, 1)
+                    or model == "T2T1" and fw_version >= (2, 0, 9)):
                 cb_no_backup.setToolTip(SEEDLESS_MODE_WARNING)
             else:
                 cb_no_backup.setEnabled(False)
