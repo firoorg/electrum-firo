@@ -12,9 +12,13 @@ from electrum_firo.plugins.hw_wallet.plugin import OutdatedHwFirmwareException, 
 
 from trezorlib.client import TrezorClient, PASSPHRASE_ON_DEVICE
 from trezorlib.exceptions import TrezorFailure, Cancelled, OutdatedFirmwareError
-from trezorlib.messages import WordRequestType, FailureType, RecoveryDeviceType, ButtonRequestType
+from trezorlib.messages import (ButtonRequest, WordRequestType, FailureType,
+                                RecoveryDeviceInputMethod as RecoveryDeviceType,
+                                ButtonRequestType)
+
 import trezorlib.btc
 import trezorlib.device
+import trezorlib.models
 
 MESSAGES = {
     ButtonRequestType.ConfirmOutput:
@@ -210,15 +214,17 @@ class TrezorClientBase(HardwareClientBase, Logger):
         return self.client.version >= self.plugin.minimum_firmware
 
     def get_trezor_model(self):
-        """Returns '1' for Trezor One, 'T' for Trezor T."""
-        return self.features.model
+        """Return the stable internal model identifier used by trezorlib."""
+        return trezorlib.models.detect(self.features).internal_name
 
     def device_model_name(self):
         model = self.get_trezor_model()
-        if model == '1':
+        if model == 'T1B1':
             return "Trezor One"
-        elif model == 'T':
+        elif model == 'T2T1':
             return "Trezor T"
+        elif model in ("T2B1", "T3B1"):
+            return "Trezor Safe 3"
         return None
 
     @runs_in_hwd_thread
@@ -275,7 +281,8 @@ class TrezorClientBase(HardwareClientBase, Logger):
 
     # ========= UI methods ==========
 
-    def button_request(self, code):
+    def button_request(self, request):
+        code = request.code if isinstance(request, ButtonRequest) else request
         message = self.msg or MESSAGES.get(code) or MESSAGES['default']
         self.handler.show_message(message.format(self.device), self.client.cancel)
 
