@@ -176,10 +176,17 @@ rm -rf "$PYDIR"/site-packages/PyQt5/Qt.so
 find "$APPDIR" -path '*/__pycache__*' -delete
 # note that *.dist-info is needed by certain packages.
 # e.g. see https://gitlab.com/python-devs/importlib_metadata/issues/71
-for f in "$PYDIR"/site-packages/importlib_metadata-*.dist-info; do mv "$f" "$(echo "$f" | sed s/\.dist-info/\.dist-info2/)"; done
+# slip10 uses importlib.metadata to read its version at import time.
+for f in "$PYDIR"/site-packages/{importlib_metadata,slip10}-*.dist-info; do
+    [ -d "$f" ] || continue
+    mv "$f" "${f%.dist-info}.dist-info2"
+done
 rm -rf "$PYDIR"/site-packages/*.dist-info/
 rm -rf "$PYDIR"/site-packages/*.egg-info/
-for f in "$PYDIR"/site-packages/importlib_metadata-*.dist-info2; do mv "$f" "$(echo "$f" | sed s/\.dist-info2/\.dist-info/)"; done
+for f in "$PYDIR"/site-packages/{importlib_metadata,slip10}-*.dist-info2; do
+    [ -d "$f" ] || continue
+    mv "$f" "${f%.dist-info2}.dist-info"
+done
 
 
 find -exec touch -h -d '2000-11-11T11:11:11+00:00' {} +
