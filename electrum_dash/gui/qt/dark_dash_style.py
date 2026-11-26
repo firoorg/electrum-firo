@@ -282,12 +282,6 @@ QLabel {
     min-width:150px;
 }
 
-/* A label between two fields, not at the start of a row */
-#send_container > QLabel#send_available_label {
-    margin-left:0;
-    min-width:0;
-}
-
 
 /* Receive Container */
 #receive_container {

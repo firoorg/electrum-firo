@@ -1842,7 +1842,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         grid.addWidget(self.send_source_combo, 3, 1)
         grid.addWidget(self.send_source_fixed, 3, 1)
         available_label = QLabel(_('Available'))
-        available_label.setObjectName('send_available_label')
+        # Between two fields, so without the width of a label that starts a row.
+        available_label.setStyleSheet('margin-left:0; min-width:0')
         grid.addWidget(available_label, 3, 2)
 
         self.av_amnt = BTCAmountEdit(self.get_decimal_point)
@@ -1953,8 +1954,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 if password is None:
                     return
             try:
-                # Only the fee is estimated here, which is quick. The proof is
-                # built once, in the background, after Review payment.
+                # The proof is built once, in the background, after Review payment.
                 send_amt, fee = self.wallet.estimateSparkSendAll(address, password)
             except NotEnoughFunds:
                 self.show_error(_('Not enough available Spark funds'))
@@ -2611,8 +2611,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.show_message(text)
             return
         if route and route.to_spark:
-            # A move into Spark cannot pay less than the minimum fee rate, so
-            # there is no lower fee to offer here.
+            # A move into Spark pays the minimum fee rate: no lower fee to offer.
             self.show_message(self.get_text_not_enough_funds_mentioning_frozen())
             return
 

@@ -91,13 +91,11 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
         for button in self.buttons:
             button.setHidden(b)
         self.resizeButtons()
-        # The text now has more or less room and may wrap differently.
-        QTimer.singleShot(0, self.update_size)
+        QTimer.singleShot(0, self.update_size)  # the text may wrap differently now
 
     def resizeButtons(self):
         super().resizeButtons()
-        # A Spark address fills several lines. Keep its text out from under
-        # the buttons in the corner.
+        # Keep the lines of a long address out from under the buttons.
         widths = [b.sizeHint().width() for b in self.buttons if not b.isHidden()]
         margin = sum(widths) + 10 if widths else 0
         if margin != self.viewportMargins().right():
@@ -105,9 +103,10 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        # The text may now wrap onto more or fewer lines. Fit the height once
-        # this event is done, so that the buttons follow the new height.
-        QTimer.singleShot(0, self.update_size)
+        if e.size().width() != e.oldSize().width():
+            # Refit once this event is done, so that the buttons follow the
+            # new height.
+            QTimer.singleShot(0, self.update_size)
 
     def setGreen(self):
         self.setStyleSheet(util.ColorScheme.GREEN.as_stylesheet(True))
