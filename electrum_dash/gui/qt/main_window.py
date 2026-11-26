@@ -1755,11 +1755,18 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             address = self._get_send_destination_address()
             if not address:
                 return
+            password = None
+            if self.wallet.has_keystore_encryption():
+                password = self.password_dialog(
+                    _('Enter your password to send from your Spark balance'))
+                if password is None:
+                    self.max_button.setChecked(False)
+                    return
             try:
                 tx = self.wallet.prepareSendSpark(
                     address=address,
                     amount='!',
-                    memo=self.message_e.text() or '')
+                    password=password)
             except NotEnoughFunds:
                 self.max_button.setChecked(False)
                 self.show_error(_('Not enough private funds'))
@@ -1787,7 +1794,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 return self.wallet.prepareSparkMintTransaction(
                     spark_address=spark_addr,
                     amount='!',
-                    memo=self.message_e.text() or '',
                     coins=self.get_coins(),
                     fee=fee_est)
             try:
@@ -2056,8 +2062,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             if amount is None:
                 self.show_error(_('Invalid Amount'))
                 return
-            self.pay_sparksend_dialog(
-                address, amount, memo=self.message_e.text() or '')
+            self.pay_sparksend_dialog(address, amount)
             return
         spark_addr = self.payto_e.get_spark_address()
         if spark_addr:
@@ -2073,8 +2078,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             if amount is None:
                 self.show_error(_('Invalid Amount'))
                 return
-            self.pay_mintspark_dialog(
-                spark_addr, amount, memo=self.message_e.text() or '')
+            self.pay_mintspark_dialog(spark_addr, amount)
             return
         self.pending_invoice = self.read_invoice()
         self.pending_invoice_ext = self.read_invoice_ext()
