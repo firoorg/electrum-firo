@@ -1481,7 +1481,9 @@ class SparkInterfaceMixin:
     def _init_spark_session(self, key_data: bytes) -> None:
         self.spark_view_key_hex = libsparkmobile.get_full_view_key_hex(
             key_data)
-        self.db.put('spark_view_key_hex', self.spark_view_key_hex)
+        # The view key is derived again at each enable and lives in memory
+        # only. Earlier versions wrote it to the wallet file: remove that copy.
+        self.db.put('spark_view_key_hex', None)
         book = self._spark_address_book()
         if '1' not in book:
             self._save_spark_address(
@@ -1496,8 +1498,7 @@ class SparkInterfaceMixin:
 
     def _generateSparkAddress(self, diversifier: int) -> str:
         is_testnet = bool(constants.net.TESTNET)
-        view_key = getattr(self, 'spark_view_key_hex', None) or self.db.get(
-            'spark_view_key_hex')
+        view_key = getattr(self, 'spark_view_key_hex', None)
         if not view_key:
             raise RuntimeError(_('Spark key is not available'))
         return libsparkmobile.get_address_from_full_view_key_hex(
@@ -1508,14 +1509,14 @@ class SparkInterfaceMixin:
         cached = getattr(self, '_spark_change_address', None)
         if cached:
             return cached
-        if self.spark_view_key_hex or self.db.get('spark_view_key_hex'):
+        if self.spark_view_key_hex:
             self._spark_change_address = self._generateSparkAddress(
                 libsparkmobile.SPARK_CHANGE_DIVERSIFIER)
             return self._spark_change_address
         return None
 
     def getCurrentReceivingSparkAddress(self) -> str:
-        if not self.spark_view_key_hex and not self.db.get('spark_view_key_hex'):
+        if not self.spark_view_key_hex:
             raise RuntimeError(_('Spark key is not available'))
         cached = getattr(self, '_current_spark_address', None)
         if cached:
