@@ -203,9 +203,8 @@ class TestSparkWallet(TestCaseForTestnet):
         with mock.patch('electrum_firo.spark_interface.libsparkmobile.is_available', return_value=True), \
                 mock.patch.object(self.wallet, 'get_spendable_coins') as all_coins:
             for amount in (5000, '!'):
-                for selection in ({'coins': []}, {'utxos': []}):
-                    with self.subTest(amount=amount, selection=selection), self.assertRaises(NotEnoughFunds):
-                        self.wallet.prepareSparkMintTransaction(spark_address='spark', amount=amount, **selection)
+                with self.subTest(amount=amount), self.assertRaises(NotEnoughFunds):
+                    self.wallet.prepareSparkMintTransaction(spark_address='spark', amount=amount, coins=[])
             all_coins.assert_not_called()
 
     @skipUnless(libsparkmobile.is_available(), 'electrum_libsparkmobile is not built')
@@ -244,7 +243,8 @@ class TestSparkWallet(TestCaseForTestnet):
                 mock.patch.object(self.wallet, '_createSparkMintTransactions',
                                   return_value=mints):
             first = self.wallet.prepareSparkMintTransaction(
-                spark_address='spark', amount=3000)
+                spark_address='spark', amount=3000,
+                coins=self.wallet.get_spendable_coins(None))
         self.assertEqual([mints[1]], first.sparkMints)
         self.assertEqual(30, first._spark_fee)
         self.assertEqual(3000, first._spark_send_amount)

@@ -111,17 +111,6 @@ def _spark_coin_type_label(value) -> Optional[str]:
     return None
 
 
-class MutableSparkRecipient:
-    def __init__(self, address: str, value: int, memo: str = ''):
-        self.address = address
-        self.value = int(value)
-        self.memo = memo or ''
-
-    def __repr__(self):
-        return (f'MutableSparkRecipient{{ address: {self.address}, '
-                f'value: {self.value}, memo: {self.memo} }}')
-
-
 SPARK_GROUP_ELEMENT_SIZE = 34
 
 
@@ -1438,146 +1427,72 @@ class SparkInterfaceMixin:
         return kDefaultSparkIndex
 
     def _createSparkMintTransactions(
-            self, *,
-            availableUtxos: Sequence[PartialTxInput],
-            outputs: List[MutableSparkRecipient],
-            subtractFeeFromAmount: bool,
-            autoMintAll: bool = False,
-            change_addr: str = None,
+            self, *, availableUtxos: Sequence[PartialTxInput], address: str,
+            value: int, subtractFeeFromAmount: bool,
             fee: int = None) -> List[PartialTransaction]:
-        if not outputs:
-            raise ValueError(_('Cannot mint without some recipients'))
-        if len(outputs) != 1:
-            raise ValueError(_('Only one Spark mint recipient is supported'))
-
-        valueToMint = sum(o.value for o in outputs)
-        if valueToMint <= 0:
-            raise ValueError(_('Cannot mint amount=%s') % valueToMint)
-
-        totalUtxosValue = _sum(availableUtxos)
-        if valueToMint > totalUtxosValue:
-            raise NotEnoughFunds(_('Insufficient balance to create spark mint(s)'))
-
+        """Mints `value` to `address`: one transaction per funding address,
+        until the value is covered."""
         utxosByAddress: Dict[str, List[PartialTxInput]] = {}
         for utxo in availableUtxos:
-            addr = utxo.address
-            if not addr:
-                continue
-            utxosByAddress.setdefault(addr, []).append(utxo)
+            if utxo.address:
+                utxosByAddress.setdefault(utxo.address, []).append(utxo)
         valueAndUTXOs = list(utxosByAddress.values())
         if not valueAndUTXOs:
             raise NotEnoughFunds()
 
-        nChangePosRequest = -1
-        outputs_ = [MutableSparkRecipient(o.address, o.value, o.memo)
-                    for o in outputs]
-
-        minRelayFeeRatePerKB = 1000
         if fee is not None:
             mintFeeRatePerKB = max(0, int(fee))
         else:
-            fee_per_kb = self.config.fee_per_kb() or 1000
-            mintFeeRatePerKB = max(minRelayFeeRatePerKB, int(fee_per_kb))
+            mintFeeRatePerKB = max(1000, int(self.config.fee_per_kb() or 1000))
         currentHeight = self.get_local_height()
-        results: List[PartialTransaction] = []
-
-        autoMintSparkAddress = outputs[0].address if autoMintAll else None
-        change_addrs = self.get_change_addresses_for_new_transaction(change_addr)
+        change_addrs = self.get_change_addresses_for_new_transaction(None)
         changeAddress = change_addrs[0] if change_addrs else None
         dust = self.dust_threshold()
+        is_testnet = bool(constants.net.TESTNET)
 
+        def make_tx(inputs, outputs, lockTime) -> PartialTransaction:
+            tx = PartialTransaction()
+            tx._inputs = list(inputs)
+            tx._outputs = list(outputs)
+            tx.locktime = lockTime
+            tx.version = 1
+            tx.invalidate_ser_cache()
+            return tx
+
+        results: List[PartialTransaction] = []
+        valueToMint = value
         random.shuffle(valueAndUTXOs)
-
-        while valueAndUTXOs:
+        while valueToMint > 0 and valueAndUTXOs:
             lockTime = (max(0, currentHeight - random.randint(0, 99))
                         if random.randint(0, 9) == 0 else currentHeight)
-            txVersion = 1
-
             itr = valueAndUTXOs[0]
-            valueToMintInTx = _sum(itr)
-            if not autoMintAll:
-                valueToMintInTx = min(valueToMintInTx, valueToMint)
-
             nFeeRet = 0
-            skipCoin = False
             built_tx = None
-            mintedValue = 0
-
             while True:
-                mintedValue = valueToMintInTx
-                if subtractFeeFromAmount:
-                    nValueToSelect = mintedValue
-                else:
-                    nValueToSelect = mintedValue + nFeeRet
-
-                if nValueToSelect > _sum(itr) and not subtractFeeFromAmount:
-                    nValueToSelect = mintedValue
-                    mintedValue -= nFeeRet
-
-                if mintedValue <= 0:
-                    valueAndUTXOs.remove(itr)
-                    skipCoin = True
+                mintedValue = min(_sum(itr), valueToMint)
+                nValueToSelect = mintedValue
+                if not subtractFeeFromAmount:
+                    nValueToSelect += nFeeRet
+                    if nValueToSelect > _sum(itr):
+                        # These inputs cannot pay the fee on top: take it
+                        # from what they mint.
+                        nValueToSelect = mintedValue
+                        mintedValue -= nFeeRet
+                outputValue = (mintedValue - nFeeRet if subtractFeeFromAmount
+                               else mintedValue)
+                if outputValue <= 0:
+                    valueAndUTXOs.remove(itr)  # cannot pay for its own mint
                     break
 
-                nChangePosInOut = nChangePosRequest
+                [(script, cAmount)] = libsparkmobile.create_spark_mint_recipients(
+                    [(address, outputValue, '')], generate=False,
+                    is_testnet=is_testnet)
+                if cAmount < dust:
+                    raise ValueError(_('Output amount too small'))
+
                 setCoins: List[PartialTxInput] = []
-
-                remainingOutputs = [MutableSparkRecipient(o.address, o.value, o.memo)
-                                    for o in outputs_]
-                singleTxOutputs: List[MutableSparkRecipient] = []
-
-                if autoMintAll:
-                    singleTxOutputs.append(
-                        MutableSparkRecipient(autoMintSparkAddress, mintedValue, ''))
-                else:
-                    remainingMintValue = mintedValue
-                    while remainingMintValue > 0 and remainingOutputs:
-                        singleMintValue = min(
-                            remainingMintValue, remainingOutputs[0].value)
-                        singleTxOutputs.append(MutableSparkRecipient(
-                            remainingOutputs[0].address,
-                            singleMintValue,
-                            remainingOutputs[0].memo))
-                        remainingMintValue -= singleMintValue
-                        remainingOutputs[0].value -= singleMintValue
-                        if remainingOutputs[0].value == 0:
-                            remainingOutputs.pop(0)
-
-                if subtractFeeFromAmount and nFeeRet > 0:
-                    remainingFee = nFeeRet
-                    outputIndex = 0
-                    while singleTxOutputs and remainingFee > 0:
-                        if outputIndex >= len(singleTxOutputs):
-                            outputIndex = 0
-                        outputsLeft = len(singleTxOutputs) - outputIndex
-                        feeShare = remainingFee // outputsLeft
-                        if remainingFee % outputsLeft:
-                            feeShare += 1
-                        if singleTxOutputs[outputIndex].value <= feeShare:
-                            remainingFee -= singleTxOutputs[outputIndex].value
-                            singleTxOutputs.pop(outputIndex)
-                            continue
-                        singleTxOutputs[outputIndex].value -= feeShare
-                        remainingFee -= feeShare
-                        outputIndex += 1
-                    if not singleTxOutputs:
-                        if autoMintAll:
-                            raise ValueError(
-                                _('UTXO value is too small to cover Spark mint fee'))
-                        valueAndUTXOs.remove(itr)
-                        skipCoin = True
-                        break
-
-                dummyRecipients = libsparkmobile.create_spark_mint_recipients(
-                    [(o.address, o.value, '') for o in singleTxOutputs],
-                    generate=False,
-                    is_testnet=bool(constants.net.TESTNET))
-                for _script, cAmount in dummyRecipients:
-                    if cAmount < dust:
-                        raise ValueError(_('Output amount too small'))
-
                 nValueIn = 0
-                for utxo in list(itr):
+                for utxo in itr:
                     if nValueToSelect > nValueIn:
                         setCoins.append(utxo)
                         nValueIn += int(utxo.value_sats() or 0)
@@ -1585,186 +1500,102 @@ class SparkInterfaceMixin:
                     raise NotEnoughFunds()
 
                 nChange = nValueIn - nValueToSelect
-                vout: List[PartialTxOutput] = []
-                for (script, cAmount), out in zip(dummyRecipients, singleTxOutputs):
-                    vout.append(PartialTxOutput(scriptpubkey=script, value=cAmount))
-
+                mint_output = PartialTxOutput(scriptpubkey=script, value=cAmount)
+                vout = [mint_output]
                 # What this transaction pays as fee: the amount set aside for
                 # it, plus a leftover too small to come back as change.
                 nFeePaid = nFeeRet
-                if nChange > 0:
-                    if nChange < dust:
-                        nFeePaid += nChange
-                    else:
-                        if not changeAddress:
-                            raise RuntimeError(_('No change address'))
-                        nChangePosInOut = random.randint(0, len(vout))
-                        vout.insert(
-                            nChangePosInOut,
-                            PartialTxOutput.from_address_and_value(
-                                changeAddress, nChange))
+                if 0 < nChange < dust:
+                    nFeePaid += nChange
+                elif nChange:
+                    if not changeAddress:
+                        raise RuntimeError(_('No change address'))
+                    vout.insert(
+                        random.randint(0, len(vout)),
+                        PartialTxOutput.from_address_and_value(
+                            changeAddress, nChange))
 
                 for c in setCoins:
                     c.nsequence = MINT_INPUT_SEQUENCE
-                est_tx = PartialTransaction()
-                est_tx._inputs = list(setCoins)
-                est_tx._outputs = list(vout)
-                est_tx.locktime = lockTime
-                est_tx.version = txVersion
-                est_tx.invalidate_ser_cache()
-
-                nBytes = est_tx.estimated_size()
+                nBytes = make_tx(setCoins, vout, lockTime).estimated_size()
                 if nBytes * 4 > MAX_NEW_TX_WEIGHT:
                     raise ValueError(_('Transaction too large'))
-                nBytesBuffer = 10 + 4 * len(setCoins)
                 nFeeNeeded = SimpleConfig.estimate_fee_for_feerate(
-                    mintFeeRatePerKB, nBytes + nBytesBuffer)
+                    mintFeeRatePerKB, nBytes + 10 + 4 * len(setCoins))
+                if nFeePaid < nFeeNeeded:
+                    nFeeRet = nFeeNeeded
+                    continue
 
-                if nFeePaid >= nFeeNeeded:
-                    for used in setCoins:
-                        if used in itr:
-                            itr.remove(used)
-                    if not itr:
-                        valueAndUTXOs.remove(itr)
-
-                    serialContext = libsparkmobile.serialize_mint_context(
-                        [(i.prevout.txid[::-1], i.prevout.out_idx)
-                         for i in setCoins])
-                    recipients = libsparkmobile.create_spark_mint_recipients(
-                        [(o.address, o.value, o.memo) for o in singleTxOutputs],
-                        serialContext, generate=True,
-                        is_testnet=bool(constants.net.TESTNET))
-
-                    mint_i = 0
-                    for i, out in enumerate(vout):
-                        if (out.scriptpubkey
-                                and out.scriptpubkey[0] == OP_SPARKMINT):
-                            script, cAmount = recipients[mint_i]
-                            vout[i] = PartialTxOutput(
-                                scriptpubkey=script, value=cAmount)
-                            mint_i += 1
-
-                    outputs_ = remainingOutputs
-                    valueToMint = sum(o.value for o in outputs_)
-
-                    built_tx = PartialTransaction()
-                    built_tx._inputs = list(setCoins)
-                    built_tx._outputs = list(vout)
-                    built_tx.locktime = lockTime
-                    built_tx.version = txVersion
-                    built_tx._spark_fee = nFeePaid
-                    built_tx.invalidate_ser_cache()
-                    _verify_mint_serial_context(built_tx, serialContext)
-                    break
-
-                nFeeRet = nFeeNeeded
-
-            if skipCoin:
-                continue
-            if built_tx is None:
+                for used in setCoins:
+                    itr.remove(used)
+                if not itr:
+                    valueAndUTXOs.remove(itr)
+                valueToMint -= mintedValue
+                serialContext = libsparkmobile.serialize_mint_context(
+                    [(i.prevout.txid[::-1], i.prevout.out_idx)
+                     for i in setCoins])
+                [(script, cAmount)] = libsparkmobile.create_spark_mint_recipients(
+                    [(address, outputValue, '')], serialContext, generate=True,
+                    is_testnet=is_testnet)
+                vout[vout.index(mint_output)] = PartialTxOutput(
+                    scriptpubkey=script, value=cAmount)
+                built_tx = make_tx(setCoins, vout, lockTime)
+                built_tx._spark_fee = nFeePaid
+                _verify_mint_serial_context(built_tx, serialContext)
                 break
 
+            if built_tx is None:
+                continue
             actualFee = (_sum(built_tx._inputs)
                          - sum(o.value for o in built_tx._outputs))
-            if actualFee != built_tx._spark_fee:
+            if actualFee != nFeePaid:
                 _logger.error(
                     f'Spark mint fee accounting mismatch: '
-                    f'expected={built_tx._spark_fee}, actual={actualFee}')
+                    f'expected={nFeePaid}, actual={actualFee}')
                 raise ValueError(_('Spark mint fee accounting mismatch'))
-
             vSize = built_tx.estimated_size()
-            if built_tx._spark_fee < vSize:
+            if nFeePaid < vSize:
                 _logger.warning(
                     f'Fee rate below 1 sat/byte minimum relay fee: '
-                    f'fee={built_tx._spark_fee} sats, vSize={vSize} bytes')
+                    f'fee={nFeePaid} sats, vSize={vSize} bytes')
                 raise ValueError(
                     _('Fee rate below 1 sat/byte minimum relay fee'))
-
             results.append(built_tx)
-            if not autoMintAll and valueToMint <= 0:
-                break
 
-        if not autoMintAll and valueToMint > 0:
+        if valueToMint > 0:
             # The inputs ran out before the amount and its fees were covered.
             raise NotEnoughFunds(_('Insufficient balance to create spark mint(s)'))
-        if autoMintAll and not results:
-            raise ValueError(_('No Spark mint transactions were created'))
         return results
 
     def prepareSparkMintTransaction(
-            self, *,
-            sparkRecipients: Sequence[MutableSparkRecipient] = None,
-            utxos: Sequence[PartialTxInput] = None,
-            subtractFeeFromAmount: bool = None,
-            autoMintAll: bool = False,
-            spark_address: str = None,
-            amount=None,
-            memo: str = '',
-            coins: Sequence[PartialTxInput] = None,
-            fee=None,
-            change_addr: str = None,
-            domain=None,
-            nonlocal_only: bool = False) -> PartialTransaction:
+            self, *, spark_address: str, amount,
+            coins: Sequence[PartialTxInput], fee=None) -> PartialTransaction:
         if not self.spark_enabled:
             raise RuntimeError(_('Spark is disabled for this session'))
         if not libsparkmobile.is_available():
             raise RuntimeError('electrum_libsparkmobile is not available')
-
-        selected = utxos if utxos is not None else coins
-        coinControl = selected is not None
-        availableUtxos = list(selected if coinControl else self.get_spendable_coins(
-            domain, nonlocal_only=nonlocal_only))
+        availableUtxos = list(coins)
         if not availableUtxos:
             raise NotEnoughFunds(_('No transparent inputs are available to move to Spark.'))
         for c in availableUtxos:
             self.add_input_info(c)
-
-        if sparkRecipients is None:
-            if not spark_address:
-                raise ValueError(_('Missing spark recipients.'))
-            if amount == '!':
-                mint_value = _sum(availableUtxos)
-                subtractFeeFromAmount = True
-            else:
-                if not isinstance(amount, int) or amount <= 0:
-                    raise ValueError(_('Invalid Amount'))
-                mint_value = amount
-            if not libsparkmobile.is_valid_spark_address(
-                    spark_address, is_testnet=bool(constants.net.TESTNET)):
-                raise ValueError(_('Invalid Spark address'))
-            sparkRecipients = [MutableSparkRecipient(
-                spark_address, mint_value, memo or '')]
-        else:
-            sparkRecipients = list(sparkRecipients)
-
-        total = sum(r.value for r in sparkRecipients)
-        if total <= 0:
+        funds = _sum(availableUtxos)
+        if amount == '!':
+            amount = funds
+        elif not isinstance(amount, int) or amount <= 0:
+            raise ValueError(_('Invalid Amount'))
+        if not libsparkmobile.is_valid_spark_address(
+                spark_address, is_testnet=bool(constants.net.TESTNET)):
+            raise ValueError(_('Invalid Spark address'))
+        if amount <= 0:
             raise ValueError(_('Attempted send of zero amount'))
-
-        if coinControl and _sum(availableUtxos) < total:
+        if funds < amount:
             raise NotEnoughFunds(_('Insufficient selected UTXOs!'))
 
-        isSendAllCoinControlUtxos = coinControl and total == _sum(availableUtxos)
-
-        if subtractFeeFromAmount is None:
-            if isSendAllCoinControlUtxos or amount == '!':
-                subtractFeeFromAmount = True
-            elif _sum(availableUtxos) < total:
-                raise NotEnoughFunds(_('Insufficient balance'))
-            elif _sum(availableUtxos) == total:
-                subtractFeeFromAmount = True
-            else:
-                subtractFeeFromAmount = False
-
+        # The fee comes out of the amount only when the amount is everything.
         sparkMints = self._createSparkMintTransactions(
-            subtractFeeFromAmount=subtractFeeFromAmount,
-            autoMintAll=autoMintAll,
-            availableUtxos=availableUtxos,
-            outputs=list(sparkRecipients),
-            change_addr=change_addr,
-            fee=fee)
-        if not sparkMints:
-            raise NotEnoughFunds()
+            availableUtxos=availableUtxos, address=spark_address, value=amount,
+            subtractFeeFromAmount=funds == amount, fee=fee)
         first = sparkMints[0]
         if len(sparkMints) > 1:
             first.sparkMints = sparkMints[1:]
