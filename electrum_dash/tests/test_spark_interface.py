@@ -90,6 +90,7 @@ def _sync_for(wallet) -> SparkSynchronizer:
     sync.wallet = wallet
     sync.logger = get_logger(__name__)
     sync._missing_spend_checks = {}
+    sync._refetched_groups = set()
     return sync
 
 

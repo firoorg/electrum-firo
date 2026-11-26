@@ -62,12 +62,12 @@ class TestSparkBalanceHistory(TestCaseForTestnet):
         sync._header_hash_at = mock.Mock(return_value=None)
         sync._shared_cache = mock.Mock(return_value=SparkSharedCache(os.path.join(self.electrum_path, 'sets.json')))
         sync._request = mock.AsyncMock(side_effect=[6, OSError('offline'), 6])
-        sync._fetch_mempool_spark_rows = mock.AsyncMock(return_value=[])
-        sync.runFetchAndUpdateSparkUsedCoinTags = mock.AsyncMock()
+        sync._fetch_mempool_spark_rows = mock.AsyncMock(return_value=([], set()))
+        sync.runFetchAndUpdateSparkUsedCoinTags = mock.AsyncMock(return_value=False)
         sync._notify_wallet_updated = mock.AsyncMock()
         sync.trigger = mock.Mock()
 
-        async def fetch_group(group_id, anon_sets, coins, groups):
+        async def fetch_group(group_id, anon_sets, coins, groups, discarded=None):
             anon_sets[str(group_id)] = {'versions': [
                 {'block_hash': str(group_id), 'set_hash': '', 'size': 0, 'coins': []}]}
             return coins

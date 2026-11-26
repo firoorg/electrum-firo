@@ -401,6 +401,22 @@ class SparkSharedCache:
             if changed:
                 self._flush_locked(changed_sets)
 
+    def discard(self, *, sets=(), used_tags: bool = False) -> None:
+        """Forgets cached answers that a server has since contradicted."""
+        if not sets and not used_tags:
+            return
+        with self._lock:
+            for gid in map(str, sets):
+                self._data['spark_anon_sets'].pop(gid, None)
+                self._data['spark_groups'].pop(gid, None)
+                try:
+                    os.remove(self._set_path(gid))
+                except OSError:
+                    pass
+            if used_tags:
+                self._data['spark_used_tags'] = {}
+            self._flush_locked([])
+
     def clear(self) -> None:
         with self._lock:
             self._data = json.loads(json.dumps(self._EMPTY))
@@ -508,6 +524,9 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         self._recover_pending = False
         self._mempool_txids_checked = set()
         self._missing_spend_checks = {}
+        # Groups fetched again from this server after a cached row of theirs
+        # named the wrong transaction for one of our coins.
+        self._refetched_groups = set()
 
     async def _run_tasks(self, *, taskgroup):
         await super()._run_tasks(taskgroup=taskgroup)
@@ -704,15 +723,16 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         return rows
 
     async def _fetch_mempool_spark_rows(self):
+        """Returns the rows of unchecked mempool coins and the txids of all
+        Spark transactions in the server's mempool (None if it gave no list)."""
         try:
             mempool_txids_b64 = await self._large_request(
                 'spark.getmempoolsparktxids')
+            hex_to_b64 = {self._decode_b64(b64)[::-1].hex(): b64
+                          for b64 in (mempool_txids_b64 or [])}
         except Exception as e:
             self.logger.info(f'Spark mempool txid fetch failed: {e!r}')
-            return []
-        hex_to_b64 = {}
-        for b64 in (mempool_txids_b64 or []):
-            hex_to_b64[self._decode_b64(b64)[::-1].hex()] = b64
+            return [], None
         mempool_txids_hex = set(hex_to_b64.keys())
         self._mempool_txids_checked &= mempool_txids_hex
         to_check = list(mempool_txids_hex - self._mempool_txids_checked)
@@ -721,19 +741,26 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             f'already_checked={self._mempool_txids_checked!r} '
             f'to_check={to_check!r}')
         if not to_check:
-            return []
+            return [], mempool_txids_hex
         try:
             response = await self._large_request(
                 'spark.getmempoolsparktxs', ({'txids': to_check},))
         except Exception as e:
             self.logger.info(f'Spark mempool tx data fetch failed: {e!r}')
-            return []
+            return [], mempool_txids_hex
         self.logger.info(f'Spark mempool tx data raw response: {response!r}')
         rows = []
-        for txid_key, data in (response or {}).items():
+        for txid_key, data in (response.items()
+                               if isinstance(response, dict) else ()):
+            # The mempool is a preview, so a malformed entry is skipped: it
+            # must not stop the scan of the confirmed sets.
+            if not isinstance(data, dict):
+                continue
             coins = data.get('coins') or []
             serial_contexts = data.get('serial_context') or []
-            if not coins or not serial_contexts:
+            if (not isinstance(coins, list) or not coins
+                    or not isinstance(serial_contexts, list)
+                    or not serial_contexts):
                 continue
             context_b64 = serial_contexts[0]
             if txid_key in hex_to_b64:
@@ -743,26 +770,55 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 txid_b64 = txid_key
                 txid_hex = self._decode_b64(txid_key)[::-1].hex()
             else:
+                try:
+                    txid_b64 = base64.b64encode(
+                        bytes.fromhex(txid_key)[::-1]).decode('ascii')
+                except ValueError:
+                    continue
                 txid_hex = txid_key
-                txid_b64 = base64.b64encode(
-                    bytes.fromhex(txid_key)[::-1]).decode('ascii')
             for coin_b64 in coins:
                 rows.append([coin_b64, txid_b64, context_b64])
             self._mempool_txids_checked.add(txid_hex)
         self.logger.info(f'Spark mempool rows built: {len(rows)}')
-        return rows
+        return rows, mempool_txids_hex
 
     async def runFetchAndUpdateSparkAnonSetCacheForGroupId(
-            self, groupId, anon_sets, coins, groups, rawCoinsBySetId=None):
+            self, groupId, anon_sets, coins, groups, rawCoinsBySetId=None,
+            discarded=None):
         meta = await self._request(
             'spark.getsparkanonymitysetmeta', (str(groupId),))
         blockHash, setHash, size = _parse_set_meta(meta)
         prevMeta = FiroCacheCoordinator.getLatestSetInfoForGroupId(
             self.wallet.db, groupId, anon_sets=anon_sets)
         prevSize = int(prevMeta['size']) if prevMeta else 0
-        if size < prevSize:
-            raise SparkServerMisbehaving(
-                f'spark group {groupId} shrank from {prevSize} to {size}')
+        if (prevMeta and 0 < size < prevSize and prevMeta.get('blockHeight')
+                and prevMeta['blockHash'] != blockHash):
+            # A server that has not reached the cached block yet has a smaller
+            # set, and that is no contradiction: keep the cache until it has.
+            anchor = await self._fetch_sectors(
+                groupId, blockHash, 1, start_index=0)
+            height = await self._verify_set_block(blockHash, anchor[0])
+            if height < int(prevMeta['blockHeight']):
+                self.logger.info(
+                    f'Spark group {groupId}: server is at height {height}, '
+                    f'behind the cached set; keeping the cache')
+                return coins
+        # The cached set is what an earlier server said, and nothing ties it
+        # to the chain. A set can only grow, and at one block it has one size
+        # and hash. Where this server says otherwise, one of the two is wrong
+        # and we cannot tell which, so the group is fetched again in full.
+        if prevMeta and (
+                size < prevSize
+                or (prevMeta['blockHash'] == blockHash
+                    and (size, setHash) != (prevSize, prevMeta['setHash']))):
+            self.logger.warning(
+                f'Spark group {groupId}: server reports size {size}, cache '
+                f'has {prevSize}; fetching the group again')
+            anon_sets.pop(str(groupId), None)
+            groups.pop(str(groupId), None)
+            if discarded is not None:
+                discarded.add(groupId)
+            prevMeta, prevSize = None, 0
 
         entry = FiroCacheCoordinator._entry(
             self.wallet.db, groupId, anon_sets=anon_sets)
@@ -800,8 +856,8 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             if rawCoinsBySetId is not None:
                 rawCoinsBySetId[groupId] = rows
             version_coins = list(reversed(rows))
-            versions = (
-                [] if rebuild else list((entry or {}).get('versions') or []))
+            whole = rebuild or not entry
+            versions = [] if whole else list(entry.get('versions') or [])
             if rows:
                 versions.append({
                     'block_hash': blockHash,
@@ -816,6 +872,10 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 'size': size,
                 'versions': versions,
                 'cache_version': SPARK_SET_CACHE_VERSION,
+                # A set that is fetched whole gets a new epoch, so that every
+                # wallet sharing the cache scans all of its rows again.
+                'epoch': (os.urandom(8).hex() if whole
+                          else entry.get('epoch', '')),
             }
 
         groups[str(groupId)] = {
@@ -825,13 +885,10 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         }
         return coins
 
-    async def runFetchAndUpdateSparkUsedCoinTags(self, used_tags):
-        tag_count = len(used_tags)
-        if not tag_count and not self.syncing:
-            self.syncing = True
-            util.trigger_callback('wallet_updated', self.wallet)
+    async def _fetch_used_tags(self, start: int) -> List[Tuple[str, str]]:
+        """The server's used tags from position `start`, as (tag hash, txid)."""
         response = await self._large_request(
-            'spark.getusedcoinstagstxhashes', (str(tag_count),))
+            'spark.getusedcoinstagstxhashes', (str(start),))
         tag_rows = (response.get('tagsandtxids')
                     if isinstance(response, dict) else None)
         if (not isinstance(tag_rows, list)
@@ -842,11 +899,36 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         hashes = await run_in_thread(
             libsparkmobile.hash_tags,
             [self._decode_b64(row[0]) for row in tag_rows])
-        for tag_hash, row in zip(hashes, tag_rows):
-            used_tags[tag_hash] = self._decode_b64(row[1])[::-1].hex()
+        return [(tag_hash, self._decode_b64(row[1])[::-1].hex())
+                for tag_hash, row in zip(hashes, tag_rows)]
+
+    async def runFetchAndUpdateSparkUsedCoinTags(self, used_tags) -> bool:
+        """Appends the server's new used tags to `used_tags`. Returns True if
+        the cached tags were dropped and the whole list was fetched again."""
+        tag_count = len(used_tags)
+        if not tag_count and not self.syncing:
+            self.syncing = True
+            util.trigger_callback('wallet_updated', self.wallet)
+        # Tags are fetched by position, so tags that are not on the chain
+        # would shift every later fetch. Ask again for the last position we
+        # hold: a tag there that we lack means the cached list is not a
+        # prefix of this server's list. A server that is a few blocks behind
+        # returns nothing here, and the cache is kept.
+        start = max(0, tag_count - 1)
+        rows = await self._fetch_used_tags(start)
+        restarted = bool(tag_count and rows and rows[0][0] not in used_tags)
+        if restarted:
+            self.logger.warning(
+                'Spark: cached used tags do not match the server, '
+                'fetching them again')
+            used_tags.clear()
+            start = 0
+            rows = await self._fetch_used_tags(0)
+        used_tags.update(rows)
         self.logger.info(
             f'refreshSparkData: used tags {tag_count} -> {len(used_tags)} '
-            f'(+{len(tag_rows)} rows from offset {tag_count})')
+            f'(+{len(rows)} rows from offset {start})')
+        return restarted
 
     async def _batch_fetch_transactions(self, txids: List[str]) -> Dict[str, dict]:
         result = {}
@@ -930,7 +1012,29 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         self.wallet.release_spark_reservation(txid)
         return True
 
-    async def _verify_coin_transactions(self, coins: dict) -> None:
+    @classmethod
+    def _cached_row_txids(cls, coin: dict, anon_sets: Optional[dict]) -> set:
+        """The txids that the cached rows of the coin's set give for it."""
+        entry = (anon_sets or {}).get(str(coin.get('group_id'))) or {}
+        txids = set()
+        for version in entry.get('versions') or []:
+            for row in version.get('coins') or []:
+                if (isinstance(row, (list, tuple)) and len(row) >= 2
+                        and row[0] == coin.get('serialized_coin')):
+                    try:
+                        txids.add(cls._decode_b64(row[1])[::-1].hex())
+                    except Exception:
+                        pass
+        return txids
+
+    async def _verify_coin_transactions(self, coins: dict, anon_sets=None,
+                                        mempool_txids=None) -> set:
+        """Checks each coin against the transaction it is said to be in.
+
+        Returns the ids of the cached sets that name a wrong transaction for
+        one of our coins. `mempool_txids` is the server's current list of
+        Spark mempool transactions, or None if it is not known.
+        """
         wallet = self.wallet
         unverified = wallet.get_unverified_txs()
         to_fetch = list({
@@ -969,11 +1073,29 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             height = data.get('height')
             if isinstance(height, int) and height > 0:
                 wallet.add_unverified_tx(txid, height)
+        bad_groups = set()
         for tag in rejected:
             coin = coins.pop(tag)
             self.logger.warning(
                 f'Spark: dropping coin claimed to be in {coin.get("txid")}, '
                 f'the transaction does not contain it')
+            if coin.get('txid') in self._cached_row_txids(coin, anon_sets):
+                bad_groups.add(int(coin['group_id']))
+        if mempool_txids is not None:
+            # A coin seen only in the mempool is forgotten once the server no
+            # longer knows its transaction. If the transaction comes back or
+            # is mined, the coin is found again from the mempool or its set.
+            gone = [tag for tag, coin in coins.items()
+                    if coin.get('txid') in to_fetch
+                    and coin['txid'] not in txs
+                    and coin['txid'] not in mempool_txids
+                    and not coin.get('is_used')
+                    and not self._cached_row_txids(coin, anon_sets)]
+            for tag in gone:
+                coin = coins.pop(tag)
+                self.logger.info(
+                    f'Spark: forgetting unconfirmed coin, its transaction '
+                    f'{coin.get("txid")} is no longer known to the server')
         for coin in coins.values():
             info = wallet.db.get_verified_tx(coin.get('txid'))
             if info and coin.get('tx_checked'):
@@ -981,6 +1103,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 coin['timestamp'] = info.timestamp
             else:
                 coin['height'] = None
+        return bad_groups
 
     async def _verify_set_block(self, blockHash: str, newest_row) -> int:
         try:
@@ -1113,11 +1236,16 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
             latestGroupId = _parse_group_id(await self._request(
                 'spark.getsparklatestcoinid'))
-            cachedGroupIds = [int(g) for g in anon_sets.keys()]
-            if cachedGroupIds and latestGroupId < max(cachedGroupIds):
-                raise SparkServerMisbehaving(
-                    f'spark latest group id went back from '
-                    f'{max(cachedGroupIds)} to {latestGroupId}')
+            # Cached groups that this server contradicts. They leave the
+            # shared cache when this refresh is saved, and are fetched again.
+            discarded = {int(g) for g in anon_sets if int(g) > latestGroupId}
+            if discarded:
+                self.logger.warning(
+                    f'Spark: dropping cached groups above the latest group '
+                    f'id {latestGroupId}: {sorted(discarded)}')
+                for gid in discarded:
+                    anon_sets.pop(str(gid), None)
+                    groups.pop(str(gid), None)
 
             groupIds = []
             for groupId in range(1, latestGroupId):
@@ -1143,7 +1271,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
             for groupId in groupIds:
                 coins = await self.runFetchAndUpdateSparkAnonSetCacheForGroupId(
-                    groupId, anon_sets, coins, groups)
+                    groupId, anon_sets, coins, groups, discarded=discarded)
                 self.logger.info(
                     f'Spark group {groupId} of {latestGroupId} synced')
                 if percent_increment is not None:
@@ -1152,7 +1280,8 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                         'spark_refresh_progress', self.wallet, current_percent)
 
             await self._anchor_cached_sets(anon_sets)
-            await self.runFetchAndUpdateSparkUsedCoinTags(used_tags)
+            tags_restarted = await self.runFetchAndUpdateSparkUsedCoinTags(
+                used_tags)
             if percent_increment is not None:
                 current_percent += percent_increment
                 util.trigger_callback(
@@ -1165,7 +1294,15 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 state.get('firo_spark_cache_set_block_hash_cache') or {})
             rawCoinsBySetId = {}
             for groupId in range(1, latestGroupId + 1):
-                lastCheckedHash = groupIdBlockHashMap.get(str(groupId))
+                # The rows up to the recorded block were scanned already,
+                # unless the set has been fetched whole since (a new epoch).
+                epoch = (anon_sets.get(str(groupId)) or {}).get('epoch', '')
+                scanned = groupIdBlockHashMap.get(str(groupId))
+                if isinstance(scanned, str):
+                    scanned = ['', scanned]  # written before sets had epochs
+                lastCheckedHash = (
+                    scanned[1] if isinstance(scanned, list)
+                    and len(scanned) == 2 and scanned[0] == epoch else None)
                 info = FiroCacheCoordinator.getLatestSetInfoForGroupId(
                     self.wallet.db, groupId, anon_sets=anon_sets)
                 anonymitySetResult = FiroCacheCoordinator.getSetCoinsForGroupId(
@@ -1180,7 +1317,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 if coinsRaw:
                     rawCoinsBySetId[groupId] = coinsRaw
                 if info:
-                    groupIdBlockHashMap[str(groupId)] = info['blockHash']
+                    groupIdBlockHashMap[str(groupId)] = [epoch, info['blockHash']]
 
             if rawCoinsBySetId and not self.syncing:
                 self.syncing = True
@@ -1199,13 +1336,24 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
             state['firo_spark_cache_set_block_hash_cache'] = groupIdBlockHashMap
 
-            mempool_rows = await self._fetch_mempool_spark_rows()
+            mempool_rows, mempool_txids = await self._fetch_mempool_spark_rows()
             if mempool_rows:
                 found = await run_in_thread(
                     self._identify_sector, mempool_rows, latestGroupId, view_key_hex)
                 coins.update(found)
 
-            await self._verify_coin_transactions(coins)
+            bad_groups = await self._verify_coin_transactions(
+                coins, anon_sets, mempool_txids)
+            # A cached row that names the wrong transaction hides the coin,
+            # so its group is not kept: the next refresh fetches it again.
+            # Once per server is enough. If its own rows are the wrong ones,
+            # asking again would only repeat the download on every refresh.
+            refetch = bad_groups - self._refetched_groups
+            self._refetched_groups |= refetch
+            for gid in refetch:
+                anon_sets.pop(str(gid), None)
+                groups.pop(str(gid), None)
+                discarded.add(gid)
 
             for coin in coins.values():
                 spent_txid = used_tags.get(coin['l_tag_hash'])
@@ -1215,11 +1363,12 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
             state['chain_height'] = local_height
             state['chain_tip_hash'] = tip_hash
-            state['scan_complete'] = not more_groups_pending
+            state['scan_complete'] = not more_groups_pending and not refetch
             state.pop('groups', None)
             state.pop('used_tags_count', None)
             if not rolled_back:
                 self._merge_used_flags(coins)
+            shared.discard(sets=discarded, used_tags=tags_restarted)
             shared.update(anon_sets=anon_sets, used_tags=used_tags,
                           groups=groups)
             self.wallet.db.put('spark_scan_state', _deepcopy_db_val(state))
