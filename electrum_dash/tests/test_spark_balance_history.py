@@ -67,10 +67,9 @@ class TestSparkBalanceHistory(TestCaseForTestnet):
         sync._notify_wallet_updated = mock.AsyncMock()
         sync.trigger = mock.Mock()
 
-        async def fetch_group(group_id, anon_sets, coins, groups, discarded=None):
+        async def fetch_group(group_id, anon_sets, groups, discarded=None):
             anon_sets[str(group_id)] = {'versions': [
                 {'block_hash': str(group_id), 'set_hash': '', 'size': 0, 'coins': []}]}
-            return coins
 
         sync.runFetchAndUpdateSparkAnonSetCacheForGroupId = fetch_group
         with mock.patch.object(wallet, 'is_up_to_date', return_value=True), \

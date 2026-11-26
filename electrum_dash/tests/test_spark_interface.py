@@ -464,7 +464,7 @@ class TestSparkHelpers(TestCaseForTestnet):
 
         with mock.patch('electrum_firo.spark_interface.util.trigger_callback'):
             _run(sync.runFetchAndUpdateSparkAnonSetCacheForGroupId(
-                1, anon_sets, {}, groups))
+                1, anon_sets, groups))
 
         self.assertEqual([(0, 5)], requests)
         sync._verify_set_block.assert_awaited_once_with(
@@ -510,14 +510,13 @@ class TestSparkHelpers(TestCaseForTestnet):
 
         with mock.patch('electrum_firo.spark_interface.util.trigger_callback'):
             _run(sync.runFetchAndUpdateSparkAnonSetCacheForGroupId(
-                1, anon_sets, {}, groups))
+                1, anon_sets, groups))
 
         self.assertEqual([(0, 1)], requests)
         sync._verify_set_block.assert_awaited_once_with(block_hash, new_row)
         self.assertEqual(
             [new_row, old_row],
-            FiroCacheCoordinator.getSetCoinsForGroupId(
-                wallet.db, 1, anon_sets=anon_sets))
+            FiroCacheCoordinator.getSetCoinsForGroupId(anon_sets, 1))
 
     def test_set_that_contradicts_the_cache_is_fetched_whole(self):
         block_a = base64.b64encode(b'\x01' * 32).decode()
@@ -551,7 +550,7 @@ class TestSparkHelpers(TestCaseForTestnet):
                 groups, discarded = {'1': {'size': cached_size}}, set()
                 with mock.patch('electrum_firo.spark_interface.util.trigger_callback'):
                     _run(sync.runFetchAndUpdateSparkAnonSetCacheForGroupId(
-                        1, anon_sets, {}, groups, discarded=discarded))
+                        1, anon_sets, groups, discarded))
                 self.assertEqual(requested, requests)
                 if server_height < 100:
                     self.assertEqual(set(), discarded)

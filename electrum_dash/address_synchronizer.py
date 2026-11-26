@@ -1284,11 +1284,12 @@ class AddressSynchronizer(Logger):
             own_heights[gid] = max(own_heights.get(gid, 0), int(coin['height']))
         if group_ids is None:
             group_ids = own_heights
-        shared = get_spark_shared_cache(self.config)
+        # One copy of the cached sets serves every group.
+        anon_sets = get_spark_shared_cache(self.config).snapshot_anon_sets()
         result = []
         for groupId in sorted(group_ids):
-            info = FiroCacheCoordinator.getLatestSetInfoForGroupId(shared, groupId)
-            resultSet = FiroCacheCoordinator.getSetCoinsForGroupId(shared, groupId)
+            info = FiroCacheCoordinator.getLatestSetInfoForGroupId(anon_sets, groupId)
+            resultSet = FiroCacheCoordinator.getSetCoinsForGroupId(anon_sets, groupId)
             if not resultSet:
                 continue
             if info is None:
