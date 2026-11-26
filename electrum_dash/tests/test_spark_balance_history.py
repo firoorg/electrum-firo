@@ -11,7 +11,7 @@ from electrum_firo.wallet import Abstract_Wallet
 
 from . import TestCaseForTestnet
 from .test_spark_interface import MINT_SCRIPT, _bip39_keystore, _raw_tx, _run, _spark_coin, _sync_for, _wallet
-from . import test_spark_qt
+from .test_spark_qt import SparkQtTestCase
 
 
 class TestSparkBalanceHistory(TestCaseForTestnet):
@@ -86,7 +86,7 @@ class TestSparkBalanceHistory(TestCaseForTestnet):
         self.assertEqual('waiting', wallet.get_spark_scan_status())
 
 
-class TestSparkBalanceHistoryQt(test_spark_qt.SparkQtTestCase):
+class TestSparkBalanceHistoryQt(SparkQtTestCase):
     def test_gross_available_matches_both_pool_balances(self):
         window = self.open_wallet(spark_funds=3 * COIN)
         wallet = window.wallet

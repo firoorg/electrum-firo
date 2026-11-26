@@ -2,15 +2,13 @@ import asyncio
 import base64
 import os
 import struct
-import tempfile
 from unittest import mock, skipUnless
 
 from electrum_firo import keystore, libsparkmobile
-from electrum_firo.bitcoin import address_to_script
+from electrum_firo.bitcoin import address_to_script, hash160_to_exp2pkh, hash160_to_p2pkh
 from electrum_firo.dash_tx import SPARK_SPEND, SPARK_SPEND_V2, FiroSparkSpend
 from electrum_firo.logging import get_logger
 from electrum_firo.simple_config import SimpleConfig
-from electrum_firo.bitcoin import hash160_to_exp2pkh, hash160_to_p2pkh
 from electrum_firo.interface import NotificationSession
 from electrum_firo.spark_interface import (
     FiroCacheCoordinator, MAX_SPARK_GROUP_ID, MAX_SPARK_SET_SIZE,
@@ -53,6 +51,10 @@ def _raw_tx(inputs, outputs) -> str:
         raw += struct.pack('<q', value) + _varint(len(script)) + script
     raw += struct.pack('<I', 0)
     return raw.hex()
+
+
+def _mint_tx(prev: str) -> Transaction:
+    return Transaction(_raw_tx([(prev * 32, 0)], [(MINT_SCRIPT, 7000)]))
 
 
 def _spark_coin(txid: str, value: int, serialized=ROW_BYTES, **kw) -> dict:
@@ -100,6 +102,7 @@ def _sync_for(wallet) -> SparkSynchronizer:
     sync.logger = get_logger(__name__)
     sync._missing_spend_checks = {}
     sync._refetched_groups = set()
+    sync.syncing = False
     return sync
 
 
@@ -257,18 +260,14 @@ class TestSparkWallet(TestCaseForTestnet):
         self.assertEqual(50, self.wallet.get_spark_coin_height(coin))
 
     def test_fabricated_mint_row_is_not_credited(self):
-        real = Transaction(_raw_tx(
-            [('33' * 32, 0)], [(MINT_SCRIPT, 7000)]))
+        real = _mint_tx('33')
         honest = _spark_coin(real.txid(), 7000, l_tag_hash='honest')
         forged = _spark_coin(real.txid(), 9_000_000,
                              serialized=b'\x42' * 100, l_tag_hash='forged')
         coins = {'honest': honest, 'forged': forged}
         sync = _sync_for(self.wallet)
-
-        async def fetch(txids):
-            return {real.txid(): {'hex': real.serialize(),
-                                  'height': 123, 'blocktime': 1}}
-        sync._batch_fetch_transactions = fetch
+        sync._batch_fetch_transactions = mock.AsyncMock(return_value={
+            real.txid(): {'hex': real.serialize(), 'height': 123, 'blocktime': 1}})
         _run(sync._verify_coin_transactions(coins))
 
         self.assertNotIn('forged', coins)
@@ -277,22 +276,18 @@ class TestSparkWallet(TestCaseForTestnet):
         self.assertEqual(123, self.wallet.get_unverified_txs()[real.txid()])
 
     def test_server_returning_other_tx_is_rejected(self):
-        other = Transaction(_raw_tx(
-            [('44' * 32, 0)], [(MINT_SCRIPT, 7000)]))
+        other = _mint_tx('44')
         coin = _spark_coin('55' * 32, 7000)
         coins = {coin['l_tag_hash']: coin}
         sync = _sync_for(self.wallet)
-
-        async def fetch(txids):
-            return {'55' * 32: {'hex': other.serialize(), 'height': 5}}
-        sync._batch_fetch_transactions = fetch
+        sync._batch_fetch_transactions = mock.AsyncMock(return_value={
+            '55' * 32: {'hex': other.serialize(), 'height': 5}})
         _run(sync._verify_coin_transactions(coins))
         self.assertFalse(coin.get('tx_checked'))
         self.assertNotIn('55' * 32, self.wallet.get_unverified_txs())
 
     def test_rejected_coin_names_the_cached_set_that_gave_its_txid(self):
-        real = Transaction(_raw_tx(
-            [('33' * 32, 0)], [(MINT_SCRIPT, 7000)]))
+        real = _mint_tx('33')
         forged = _spark_coin(real.txid(), 7000, serialized=b'\x42' * 100)
         sync = _sync_for(self.wallet)
         sync._batch_fetch_transactions = mock.AsyncMock(return_value={
@@ -320,14 +315,11 @@ class TestSparkWallet(TestCaseForTestnet):
         self.assertEqual({gone, pending}, left(cached, {pending}))
 
     def test_imported_spend_must_match_its_txid(self):
-        other = Transaction(_raw_tx(
-            [('44' * 32, 0)], [(MINT_SCRIPT, 7000)]))
+        other = _mint_tx('44')
         claimed = '99' * 32
         sync = _sync_for(self.wallet)
-
-        async def fetch(txids):
-            return {claimed: {'hex': other.serialize(), 'height': 0}}
-        sync._batch_fetch_transactions = fetch
+        sync._batch_fetch_transactions = mock.AsyncMock(return_value={
+            claimed: {'hex': other.serialize(), 'height': 0}})
         with mock.patch.object(self.wallet, 'getSparkSpendTransactionIds',
                                return_value=[('tag', claimed)]):
             _run(sync._import_missing_spark_spend_transactions())
@@ -442,7 +434,6 @@ class TestSparkHelpers(TestCaseForTestnet):
     def test_set_update_rebuilds_legacy_cache_and_verifies_anchor(self):
         wallet = mock.Mock()
         sync = _sync_for(wallet)
-        sync.syncing = False
         old_block_hash = base64.b64encode(b'\x01' * 32).decode()
         block_hash = base64.b64encode(b'\x02' * 32).decode()
         rows = [[f'coin-{i}', f'txid-{i}', f'context-{i}']
@@ -487,7 +478,6 @@ class TestSparkHelpers(TestCaseForTestnet):
     def test_set_growth_fetches_newest_prefix(self):
         wallet = mock.Mock()
         sync = _sync_for(wallet)
-        sync.syncing = False
         old_block_hash = base64.b64encode(b'\x01' * 32).decode()
         block_hash = base64.b64encode(b'\x02' * 32).decode()
         old_row = ['old-coin', 'old-txid', 'old-context']
@@ -542,7 +532,6 @@ class TestSparkHelpers(TestCaseForTestnet):
                 (5, block_a, 90, [(0, 1)])):          # server is behind: cache kept
             with self.subTest(cached_size=cached_size, server_height=server_height):
                 sync = _sync_for(mock.Mock())
-                sync.syncing = False
                 sync._request = mock.AsyncMock(return_value={
                     'blockHash': block_b, 'setHash': set_hash, 'size': 3})
                 requests = []
@@ -658,8 +647,7 @@ class TestSparkHelpers(TestCaseForTestnet):
                 _parse_set_meta({'blockHash': 'b', 'setHash': 's', 'size': size})
 
     def test_shared_cache_persists_same_shape_value_changes(self):
-        import os, tempfile
-        path = os.path.join(tempfile.mkdtemp(), 'cache.json')
+        path = os.path.join(self.electrum_path, 'cache.json')
         cache = SparkSharedCache(path)
         cache.update(used_tags={'t': 'a' * 64}, groups={'1': {'size': 1}})
         cache.update(used_tags={'t': 'b' * 64}, groups={'1': {'size': 1, 'block_hash': 'x'}})
@@ -668,9 +656,8 @@ class TestSparkHelpers(TestCaseForTestnet):
         self.assertEqual('x', reloaded.snapshot_groups()['1']['block_hash'])
 
     def test_shared_cache_rewrites_only_changed_sets(self):
-        import os, tempfile
         from electrum_firo import spark_interface
-        path = os.path.join(tempfile.mkdtemp(), 'cache.json')
+        path = os.path.join(self.electrum_path, 'cache.json')
         cache = SparkSharedCache(path)
         cache.update(anon_sets={'1': {'size': 2}, '2': {'size': 1}})
         written = []
@@ -688,7 +675,7 @@ class TestSparkHelpers(TestCaseForTestnet):
         self.assertEqual({}, SparkSharedCache(path).snapshot_anon_sets())
 
     def test_shared_cache_discard_lets_a_smaller_set_replace_a_larger_one(self):
-        path = os.path.join(tempfile.mkdtemp(), 'cache.json')
+        path = os.path.join(self.electrum_path, 'cache.json')
         cache = SparkSharedCache(path)
         cache.update(anon_sets={'1': {'size': 2}, '2': {'size': 9}},
                      used_tags={'t': 'a' * 64},
@@ -790,7 +777,7 @@ class TestSparkRefresh(TestCaseForTestnet):
         wallet.spark_enabled = True
         wallet.spark_view_key_hex = 'fixture'
         wallet.db.put('stored_height', 200)
-        shared = SparkSharedCache(os.path.join(tempfile.mkdtemp(), 'cache.json'))
+        shared = SparkSharedCache(os.path.join(self.electrum_path, 'cache.json'))
 
         async def request(method, params=(), timeout=120):
             if method == 'spark.getsparklatestcoinid':
@@ -810,7 +797,6 @@ class TestSparkRefresh(TestCaseForTestnet):
 
         sync = _sync_for(wallet)
         sync._sync_lock = asyncio.Lock()
-        sync.syncing = False
         sync._mempool_txids_checked = set()
         sync._shared_cache = lambda: shared
         sync._header_hash_at = lambda height: 'ab' * 32
@@ -858,7 +844,7 @@ class TestSparkRefresh(TestCaseForTestnet):
         self.assertTrue(state['scan_complete'])
 
     def test_group_of_a_rejected_coin_is_fetched_again_once_per_server(self):
-        real = Transaction(_raw_tx([('33' * 32, 0)], [(MINT_SCRIPT, 7000)]))
+        real = _mint_tx('33')
         coin = _spark_coin(real.txid(), 7000, serialized=b'\x42' * 100, l_tag_hash='ours')
         # The cached row pairs our coin with a transaction that lacks it.
         row = _set_row(coin)

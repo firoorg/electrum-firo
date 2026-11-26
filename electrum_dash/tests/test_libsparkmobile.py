@@ -10,7 +10,7 @@ import ctypes
 import hashlib
 import os
 import unittest
-from ctypes import POINTER, c_char_p, c_int, c_ubyte, c_void_p
+from ctypes import POINTER, c_char_p, c_ubyte, c_void_p
 
 from electrum_firo import libsparkmobile, spark_interface
 
@@ -28,7 +28,6 @@ BECH32M_CONST = 0x2bc830a3
 ADDRESS_ENCODING_PREFIX = b's'
 ADDRESS_NETWORK_MAINNET = ord('m')
 AES_BLOCKSIZE = 16
-GROUP_ELEMENT_SIZE = 34
 TEST_KEY = bytes(range(32))
 
 
@@ -302,13 +301,11 @@ class TestSpendV2AndNumericGuards(ElectrumTestCase):
 
     def test_oversized_coin_blobs_are_rejected(self):
         view_key = libsparkmobile.create_full_view_key(TEST_KEY)
-        try:
-            self.assertIsNone(libsparkmobile.identify_and_recover_coin(
-                b'\x00' * (64 * 1024 + 1), b'', view_key))
-            self.assertIsNone(libsparkmobile.identify_and_recover_coin(
-                b'', b'', view_key))
-        finally:
-            libsparkmobile.delete_full_view_key(view_key)
+        self.addCleanup(libsparkmobile.delete_full_view_key, view_key)
+        self.assertIsNone(libsparkmobile.identify_and_recover_coin(
+            b'\x00' * (64 * 1024 + 1), b'', view_key))
+        self.assertIsNone(libsparkmobile.identify_and_recover_coin(
+            b'', b'', view_key))
 
 
 class TestSparkSpendTxType(ElectrumTestCase):
@@ -369,23 +366,19 @@ class TestCoinLengthPrefixes(ElectrumTestCase):
 
     def test_oversized_length_prefix_is_rejected(self):
         view_key = libsparkmobile.create_full_view_key(TEST_KEY)
-        try:
-            for size in (b'\xfe\x40\x4b\x4c\x00',
-                         b'\xff' + (2 ** 40).to_bytes(8, 'little'),
-                         b'\xfd\xff\xff'):
-                coin = self._coin_with_ciphertext_size(size)
-                self.assertLess(len(coin), 120)
-                self.assertIsNone(libsparkmobile.identify_and_recover_coin(
-                    coin, b'\x00' * 32, view_key))
-        finally:
-            libsparkmobile.delete_full_view_key(view_key)
+        self.addCleanup(libsparkmobile.delete_full_view_key, view_key)
+        for size in (b'\xfe\x40\x4b\x4c\x00',
+                     b'\xff' + (2 ** 40).to_bytes(8, 'little'),
+                     b'\xfd\xff\xff'):
+            coin = self._coin_with_ciphertext_size(size)
+            self.assertLess(len(coin), 120)
+            self.assertIsNone(libsparkmobile.identify_and_recover_coin(
+                coin, b'\x00' * 32, view_key))
 
     def test_valid_coin_still_recovers(self):
         [coin] = _own_mint_coins(1, 12345)
         view_key = libsparkmobile.create_full_view_key(TEST_KEY)
-        try:
-            recovered = libsparkmobile.identify_and_recover_coin(
-                coin['serialized_coin'], coin['context'], view_key)
-        finally:
-            libsparkmobile.delete_full_view_key(view_key)
+        self.addCleanup(libsparkmobile.delete_full_view_key, view_key)
+        recovered = libsparkmobile.identify_and_recover_coin(
+            coin['serialized_coin'], coin['context'], view_key)
         self.assertEqual(12345, recovered['value'])
