@@ -1277,17 +1277,16 @@ class AddressSynchronizer(Logger):
             out.append(dict(coin, height=height))
         return out
 
-    def get_spark_cover_sets(self, group_ids=None) -> list:
+    def get_spark_cover_sets(self) -> list:
+        """The cached anonymity set of each group that holds a spendable coin."""
         own_heights = {}
         for coin in self.get_spark_spendable_coins():
             gid = int(coin['group_id'])
             own_heights[gid] = max(own_heights.get(gid, 0), int(coin['height']))
-        if group_ids is None:
-            group_ids = own_heights
         # One copy of the cached sets serves every group.
         anon_sets = get_spark_shared_cache(self.config).snapshot_anon_sets()
         result = []
-        for groupId in sorted(group_ids):
+        for groupId in sorted(own_heights):
             info = FiroCacheCoordinator.getLatestSetInfoForGroupId(anon_sets, groupId)
             resultSet = FiroCacheCoordinator.getSetCoinsForGroupId(anon_sets, groupId)
             if not resultSet:
@@ -1295,14 +1294,12 @@ class AddressSynchronizer(Logger):
             if info is None:
                 raise RuntimeError(
                     'The `info` should never be null here')
-            self._check_cover_set_anchor(groupId, info,
-                                         own_heights.get(groupId, 0))
+            self._check_cover_set_anchor(groupId, info, own_heights[groupId])
             result.append({
                 'set_id': groupId,
                 'set_hash': info['setHash'],
                 'block_hash': info['blockHash'],
                 'coins': [row[0] for row in resultSet],
-                'raw_coins': resultSet,
             })
         return result
 

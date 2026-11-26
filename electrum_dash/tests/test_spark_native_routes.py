@@ -116,7 +116,7 @@ class TestNativePaymentRoutes(SparkQtTestCase):
             (decoy, _), = libsparkmobile.create_spark_mint_recipients(
                 [(other, index * COIN, '')], ctx, generate=True, is_testnet=True)
             rows.append((_canonical_spark_coin(decoy[1:]), tx_hash))
-        cover = dict(set_id=1, raw_coins=rows, block_hash=bytes.fromhex(info.header_hash),
+        cover = dict(set_id=1, coins=[row[0] for row in rows], block_hash=bytes.fromhex(info.header_hash),
                      set_hash=hashlib.sha256(b''.join(row[0] for row in rows)).digest())
         self.enter_patch(mock.patch.object(wallet, 'get_spark_cover_sets', return_value=[cover]))
         window.update_wallet()

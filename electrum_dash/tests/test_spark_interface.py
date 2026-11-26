@@ -400,7 +400,7 @@ class TestSparkWallet(TestCaseForTestnet):
         self.wallet.db.put('spark_coins', {'c': _spark_coin(
             'ef' * 32, 10**8, height=1, tx_checked=True, l_tag_hash='c')})
         with mock.patch.object(self.wallet, '_ensure_spark_send_supported'), \
-                mock.patch('electrum_firo.spark_interface._createSparkSend') as proof, \
+                mock.patch('electrum_firo.libsparkmobile.create_spark_spend_transaction') as proof, \
                 mock.patch('electrum_firo.libsparkmobile.is_valid_spark_address',
                            return_value=False) as validate_spark_address:
             with self.assertRaises(ValueError) as ctx:

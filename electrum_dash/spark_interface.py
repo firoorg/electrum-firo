@@ -29,7 +29,6 @@ _logger = get_logger(__name__)
 
 kDefaultSparkIndex = 1
 MAX_NEW_TX_WEIGHT = 1_000_000
-SPARK_OUT_LIMIT_PER_TX = 16
 OP_SPARKMINT = 0xd1
 OP_SPARKSMINT = 0xd2
 OP_SPARKSPEND = 0xd3
@@ -222,38 +221,6 @@ def _verify_mint_serial_context(tx: PartialTransaction,
 
 def _sum(utxos: Sequence[PartialTxInput]) -> int:
     return sum(int(c.value_sats() or 0) for c in utxos)
-
-
-def _createSparkSend(*, privateKeyHex: bytes, index: int,
-                     recipients, privateRecipients, serializedCoins,
-                     allAnonymitySets, idAndBlockHashes, txHash: bytes,
-                     additionalTxSize: int = 0,
-                     isTestNet: bool = False) -> Dict:
-    ffi_recipients = [(int(r['amount']), bool(r['subtractFeeFromAmount']))
-                      for r in recipients]
-    ffi_private = [
-        (r['sparkAddress'], int(r['amount']), r.get('memo') or '',
-         bool(r['subtractFeeFromAmount']))
-        for r in privateRecipients
-    ]
-    anonymity_sets = [{
-        'set_id': int(a['setId']),
-        'set_hash': a['setHash'],
-        'coins': [row['serializedCoin'] for row in a['set']],
-    } for a in allAnonymitySets]
-    id_and_block_hashes = [(int(x['setId']), x['blockHash'])
-                           for x in idAndBlockHashes]
-    return libsparkmobile.create_spark_spend_transaction(
-        privateKeyHex,
-        recipients=ffi_recipients,
-        private_recipients=ffi_private,
-        coins=serializedCoins,
-        anonymity_sets=anonymity_sets,
-        id_and_block_hashes=id_and_block_hashes,
-        tx_hash=txHash,
-        additional_tx_size=additionalTxSize,
-        index=index,
-        is_testnet=isTestNet)
 
 
 def _anon_set_entry_size(entry) -> int:
@@ -1610,14 +1577,15 @@ class SparkInterfaceMixin:
         for tx in sparkMints:
             self.sign_transaction(tx, password)
 
-    def prepareSendSpark(self, *, password=None,
-                         **kwargs) -> PartialTransaction:
+    def prepareSendSpark(self, *, address: str, amount,
+                         password=None) -> PartialTransaction:
         if not self.spark_enabled:
             raise RuntimeError(_('Spark is disabled for this session'))
         self._ensure_spark_send_supported()
         if not libsparkmobile.is_available():
             raise RuntimeError('electrum_libsparkmobile is not available')
-        return self._prepareSendSpark(self.derive_spark_key(password), **kwargs)
+        return self._prepareSendSpark(
+            self.derive_spark_key(password), address=address, amount=amount)
 
     def _ensure_spark_send_supported(self) -> None:
         activation_height = SPARK_CHAUM_V2_START_HEIGHT.get(
@@ -1627,134 +1595,57 @@ class SparkInterfaceMixin:
             raise RuntimeError(_(
                 'Spark V2 sends are not active on this network yet'))
 
-    def _prepareSendSpark(
-            self, key_data: bytes, *,
-            recipients: Sequence[Tuple[str, int]] = None,
-            sparkRecipients: Sequence[Tuple[str, int, str]] = None,
-            address: str = None,
-            amount=None,
-            memo: str = '') -> PartialTransaction:
-        self._ensure_spark_send_supported()
-        transparentRecipients = list(recipients or [])
-        privateSparkRecipients = list(sparkRecipients or [])
-        if address is not None:
-            if amount is None:
-                raise ValueError(_('Invalid Amount'))
-            is_spark_dest = libsparkmobile.is_valid_spark_address(
-                address, is_testnet=bool(constants.net.TESTNET))
-            if not is_spark_dest and not is_address(address):
+    def _prepareSendSpark(self, key_data: bytes, *, address: str,
+                          amount) -> PartialTransaction:
+        if amount is None:
+            raise ValueError(_('Invalid Amount'))
+        is_testnet = bool(constants.net.TESTNET)
+        to_spark = libsparkmobile.is_valid_spark_address(
+            address, is_testnet=is_testnet)
+        if not to_spark:
+            if not is_address(address):
                 raise ValueError(_('Invalid Address'))
-            if is_spark_dest:
-                privateSparkRecipients.append(
-                    (address, amount if amount != '!' else 0, memo or ''))
-            else:
-                transparentRecipients.append((address, amount if amount != '!' else 0))
-
-        if not transparentRecipients and not privateSparkRecipients:
-            raise ValueError(_('No recipients provided.'))
-        for addr, _amt in transparentRecipients:
-            if is_exchange_address(addr):
+            if is_exchange_address(address):
                 raise ValueError(_(
                     'Spending Spark funds to an exchange address is not '
                     'allowed. Send them to a transparent address of your '
                     'own wallet first and from there to the exchange '
                     'address.'))
-        if len(privateSparkRecipients) >= SPARK_OUT_LIMIT_PER_TX - 1:
-            raise ValueError(_('Spark shielded output limit exceeded.'))
 
         coins = self.get_spark_spendable_coins()
         if not coins:
             raise NotEnoughFunds(_('No spendable Spark coins found'))
-
-        send_all_flag = (
-            amount == '!'
-            or any(a == '!' for _, a in transparentRecipients)
-            or any(a == '!' for _, a, _ in privateSparkRecipients))
-
-        def _amt(a):
-            return 0 if a == '!' else int(a)
-
-        transparentSumOut = sum(_amt(a) for _, a in transparentRecipients)
-        sparkSumOut = sum(_amt(a) for _, a, _ in privateSparkRecipients)
-        txAmount = transparentSumOut + sparkSumOut
-
-        if transparentSumOut > 50_000 * COIN:
-            raise ValueError(_('Spend to transparent address limit exceeded '
-                               '(50,000 Firo per transaction).'))
-
         available = sum(int(c['value']) for c in coins)
-
-        if send_all_flag:
-            if len(transparentRecipients) + len(privateSparkRecipients) != 1:
-                raise ValueError(_('Send-all requires a single recipient'))
-            if transparentRecipients:
-                transparentRecipients = [(transparentRecipients[0][0], available)]
-            else:
-                addr, _old_amt, mem = privateSparkRecipients[0]
-                privateSparkRecipients = [(addr, available, mem)]
-            transparentSumOut = sum(int(a) for _, a in transparentRecipients)
-            sparkSumOut = sum(int(a) for _, a, _ in privateSparkRecipients)
-            txAmount = transparentSumOut + sparkSumOut
-
+        if amount == '!':
+            txAmount = available
+        else:
+            txAmount = int(amount)
+            if not to_spark and txAmount > 50_000 * COIN:
+                raise ValueError(_('Spend to transparent address limit exceeded '
+                                   '(50,000 Firo per transaction).'))
         if txAmount > available:
             raise NotEnoughFunds(_('Insufficient Spark balance'))
-
-        isSendAll = available == txAmount
+        # When everything is sent, the fee comes out of the amount.
+        isSendAll = txAmount == available
 
         serializedCoins = _ffi_spend_coins(coins)
-
-        myCoinGroupIds = {int(c['group_id']) for c in coins}
-        coverSets = self.get_spark_cover_sets(myCoinGroupIds)
-
-        allAnonymitySets = [{
-            'setId': s['set_id'],
-            'setHash': s['set_hash'],
-            'set': [{'serializedCoin': row[0], 'txHash': row[1]}
-                    for row in s['raw_coins']],
-        } for s in coverSets]
-        idAndBlockHashes = [{
-            'groupId': s['set_id'],
-            'blockHash': s['block_hash'],
-        } for s in coverSets]
-
-        if not allAnonymitySets:
+        coverSets = self.get_spark_cover_sets()
+        if not coverSets:
             raise RuntimeError(_('Spark anonymity set is not ready yet.'))
-
-        recipientCount = sum(1 for _, a in transparentRecipients if int(a) > 0)
-        totalRecipientCount = recipientCount + len(privateSparkRecipients)
 
         estimatedFee = 0
         if isSendAll:
             estimatedFee = self._sparkSendAllFee(
                 key_data, txAmount, serializedCoins,
-                privateRecipients=len(privateSparkRecipients),
-                transparentRecipients=recipientCount)
-
-        transparent_outputs = []
-        ffi_recipients = []
-        for addr, amt in transparentRecipients:
-            amt = int(amt)
-            if amt <= 0:
-                continue
-            adj = (amt - (estimatedFee // totalRecipientCount)
-                   if isSendAll and totalRecipientCount else amt)
-            ffi_recipients.append({
-                'address': addr,
-                'amount': amt,
-                'subtractFeeFromAmount': isSendAll,
-            })
-            transparent_outputs.append(
-                PartialTxOutput.from_address_and_value(addr, adj))
-
-        ffi_private = []
-        for addr, amt, mem in privateSparkRecipients:
-            amt = int(amt)
-            ffi_private.append({
-                'sparkAddress': addr,
-                'amount': amt,
-                'subtractFeeFromAmount': isSendAll,
-                'memo': mem or '',
-            })
+                privateRecipients=int(to_spark),
+                transparentRecipients=int(not to_spark and txAmount > 0))
+        recipients, private_recipients, outputs = [], [], []
+        if to_spark:
+            private_recipients = [(address, txAmount, '', isSendAll)]
+        elif txAmount > 0:
+            recipients = [(txAmount, isSendAll)]
+            outputs = [PartialTxOutput.from_address_and_value(
+                address, txAmount - estimatedFee)]
 
         spark_in = PartialTxInput(
             prevout=TxOutpoint(txid=bytes(32), out_idx=0xffffffff),
@@ -1764,36 +1655,24 @@ class SparkInterfaceMixin:
 
         tx = PartialTransaction()
         tx._inputs = [spark_in]
-        tx._outputs = list(transparent_outputs)
+        tx._outputs = outputs
         tx.locktime = self.get_local_height()
         tx.version = 3
         tx.tx_type = SPARK_SPEND_V2
         tx.extra_payload = FiroSparkSpend(b'')
         tx.invalidate_ser_cache()
 
-        txHash = sha256d(bfh(tx.serialize_to_network(include_sigs=True)))
-
-        idAndBlockHashesBytes = []
-        for e in idAndBlockHashes:
-            blockHash = e['blockHash']
-            if isinstance(blockHash, str):
-                blockHash = base64.b64decode(''.join(blockHash.splitlines()))
-            idAndBlockHashesBytes.append({
-                'setId': e['groupId'],
-                'blockHash': blockHash,
-            })
-
-        spend = _createSparkSend(
-            privateKeyHex=key_data,
+        spend = libsparkmobile.create_spark_spend_transaction(
+            key_data,
+            recipients=recipients,
+            private_recipients=private_recipients,
+            coins=serializedCoins,
+            anonymity_sets=coverSets,
+            id_and_block_hashes=[(s['set_id'], s['block_hash'])
+                                 for s in coverSets],
+            tx_hash=sha256d(bfh(tx.serialize_to_network(include_sigs=True))),
             index=self.sparkIndex,
-            recipients=ffi_recipients,
-            privateRecipients=ffi_private,
-            serializedCoins=serializedCoins,
-            allAnonymitySets=allAnonymitySets,
-            idAndBlockHashes=idAndBlockHashesBytes,
-            txHash=txHash,
-            additionalTxSize=0,
-            isTestNet=bool(constants.net.TESTNET))
+            is_testnet=is_testnet)
 
         for outputScript in spend['output_scripts']:
             tx._outputs.append(PartialTxOutput(scriptpubkey=outputScript, value=0))
@@ -1804,18 +1683,15 @@ class SparkInterfaceMixin:
 
         used_tags = []
         for usedCoin in spend['used_coins']:
-            used_ser = usedCoin['serialized_coin']
-            used_group_id = int(usedCoin['group_id'])
-            used_height = int(usedCoin['height'])
             match = None
             for coin in coins:
-                if (int(coin['group_id']) != used_group_id
-                        or int(coin['height']) != used_height):
+                if (int(coin['group_id']) != usedCoin['group_id']
+                        or int(coin['height']) != usedCoin['height']):
                     continue
                 raw = coin['serialized_coin']
                 if isinstance(raw, str):
-                    raw = base64.b64decode(''.join(raw.splitlines()))
-                if raw.startswith(used_ser):
+                    raw = SparkSynchronizer._decode_b64(raw)
+                if raw.startswith(usedCoin['serialized_coin']):
                     match = coin
                     break
             if match is None:
@@ -1825,8 +1701,5 @@ class SparkInterfaceMixin:
             used_tags.append(match['l_tag_hash'])
         tx._spark_used_tags = used_tags
         tx._spark_fee = fee
-        if isSendAll:
-            tx._spark_send_amount = max(0, txAmount - fee)
-        else:
-            tx._spark_send_amount = txAmount
+        tx._spark_send_amount = max(0, txAmount - fee) if isSendAll else txAmount
         return tx
