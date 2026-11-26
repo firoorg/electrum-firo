@@ -77,7 +77,7 @@ from .plugin import run_hook
 from .address_synchronizer import (AddressSynchronizer, TX_HEIGHT_LOCAL,
                                    TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_UNCONFIRMED,
                                    PSCoinRounds)
-from .spark_interface import SparkInterfaceMixin, spark_spend_fee
+from .spark_interface import SparkInterfaceMixin, _deepcopy_db_val, spark_spend_fee
 from .invoices import Invoice, OnchainInvoice, InvoiceExt
 from .invoices import PR_PAID, PR_UNPAID, PR_UNKNOWN, PR_EXPIRED, PR_UNCONFIRMED, PR_TYPE_ONCHAIN
 from .contacts import Contacts
@@ -950,17 +950,13 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
     def _add_spark_history_items(self, items: dict) -> None:
         spark_coins = self.db.get('spark_coins', {}) or {}
         spark_txs = defaultdict(int)
+        spark_spends = defaultdict(int)
         spark_meta = {}
         for coin in spark_coins.values():
             spark_txs[coin['txid']] += int(coin['value'])
             spark_meta[coin['txid']] = coin
-        spark_spends = defaultdict(int)
-        for coin in spark_coins.values():
-            if not coin.get('is_used'):
-                continue
-            spent_txid = coin.get('spent_txid')
-            if spent_txid:
-                spark_spends[spent_txid] += int(coin['value'])
+            if coin.get('is_used') and coin.get('spent_txid'):
+                spark_spends[coin['spent_txid']] += int(coin['value'])
 
         def add_to_entry(entry, spark_value):
             combined_value = entry['bc_value'].value + spark_value
@@ -975,7 +971,6 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
                 'confirmations': mined.conf,
                 'timestamp': timestamp, 'monotonic_timestamp': timestamp,
                 'incoming': value >= 0, 'bc_value': Satoshis(value),
-                'bc_balance': Satoshis(0),
                 'date': timestamp_to_datetime(timestamp) if timestamp else None,
                 'label': self.get_label_for_txid(txid),
                 'txpos_in_block': mined.txpos, 'islock': None,
@@ -1525,11 +1520,7 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
             [BIP44_SPARK_CHAIN, SPARK_KEY_INDEX], password)[0]
 
     def enable_spark(self, password) -> None:
-        key_data = self.derive_spark_key(password)
-        try:
-            self._init_spark_session(key_data)
-        finally:
-            del key_data
+        self._init_spark_session(self.derive_spark_key(password))
         self.spark_enabled = True
         if self.spark_synchronizer:
             self.spark_synchronizer.trigger()
@@ -1541,16 +1532,14 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
         self._spark_change_address = None
 
     def clear_spark_data(self, is_rescan: bool = True) -> None:
-        state = json.loads(json.dumps(self.db.get('spark_scan_state', {}) or {}))
+        state = _deepcopy_db_val(self.db.get('spark_scan_state'))
         state.update({
             'firo_spark_cache_set_block_hash_cache': {},
             'pending_spark_spends': [],
         })
-        state.pop('groups', None)
-        state.pop('used_tags_count', None)
-        state.pop('chain_height', None)
-        state.pop('chain_tip_hash', None)
-        state.pop('scan_complete', None)
+        for key in ('groups', 'used_tags_count', 'chain_height',
+                    'chain_tip_hash', 'scan_complete'):
+            state.pop(key, None)
         self.db.put('spark_scan_state', state)
         if is_rescan:
             self.db.put('spark_coins', {})
@@ -1565,15 +1554,15 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
         return mined
 
     def note_spark_broadcast(self, tx: Transaction) -> None:
+        txid = tx.txid()
         try:
             self.add_transaction(tx, allow_unrelated=True)
         except Exception as e:
             self.logger.warning(
-                f'note_spark_broadcast: could not add tx {tx.txid()}: {e!r}')
-        self.add_unverified_tx(tx.txid(), TX_HEIGHT_UNCONFIRMED)
-        state = json.loads(json.dumps(self.db.get('spark_scan_state', {}) or {}))
+                f'note_spark_broadcast: could not add tx {txid}: {e!r}')
+        self.add_unverified_tx(txid, TX_HEIGHT_UNCONFIRMED)
+        state = _deepcopy_db_val(self.db.get('spark_scan_state'))
         pending = list(state.get('pending_spark_spends') or [])
-        txid = tx.txid()
         if txid not in pending:
             pending.append(txid)
         state['pending_spark_spends'] = pending
@@ -1583,29 +1572,27 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
     def mark_spark_coins_used(self, tags, spent_txid: str = None) -> None:
         if not tags:
             return
-        coins = json.loads(json.dumps(self.db.get('spark_coins', {}) or {}))
+        coins = _deepcopy_db_val(self.db.get('spark_coins'))
         changed = False
         for tag in tags:
             coin = coins.get(tag)
             if coin and not coin.get('is_used'):
-                coin = dict(coin)
                 coin['is_used'] = True
                 if spent_txid:
                     coin['spent_txid'] = spent_txid
-                coins[tag] = coin
                 changed = True
         if changed:
             self.db.put('spark_coins', coins)
             self.save_db()
 
     def release_spark_reservation(self, spent_txid: str) -> None:
-        coins = json.loads(json.dumps(self.db.get('spark_coins', {}) or {}))
+        coins = _deepcopy_db_val(self.db.get('spark_coins'))
         for tag, coin in coins.items():
             if coin.get('spent_txid') == spent_txid:
                 coin['is_used'] = False
                 coin.pop('spent_txid', None)
         self.db.put('spark_coins', coins)
-        state = json.loads(json.dumps(self.db.get('spark_scan_state', {}) or {}))
+        state = _deepcopy_db_val(self.db.get('spark_scan_state'))
         state['pending_spark_spends'] = [
             txid for txid in (state.get('pending_spark_spends') or [])
             if txid != spent_txid]

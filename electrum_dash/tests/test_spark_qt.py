@@ -74,7 +74,7 @@ class SparkQtTestCase(TestCaseForTestnet):
             self.enter_patch(mock.patch.object(wallet, 'enable_spark',
                                                side_effect=lambda _: setattr(wallet, 'spark_enabled', True)))
             self.enter_patch(mock.patch.object(wallet, 'get_spark_balance', return_value=SparkBalance(
-                spark_funds, spark_funds, 0, 0)))
+                spark_funds, spark_funds, 0)))
             self.enter_patch(mock.patch.object(wallet, 'getCurrentReceivingSparkAddress',
                                                return_value=SPARK_ADDRESS))
 
@@ -221,7 +221,7 @@ class TestSparkQt(SparkQtTestCase):
 
     def test_compact_receive_keeps_qr_and_balance_details_accessible(self):
         window = self.open_wallet()
-        window.wallet.get_spark_balance.return_value = SparkBalance(12 * COIN, 10 * COIN, 2 * COIN, 0)
+        window.wallet.get_spark_balance.return_value = SparkBalance(12 * COIN, 10 * COIN, 2 * COIN)
         window.wallet.db.put('spark_scan_state', {'chain_height': 10, 'scan_complete': True})
         window.update_balances()
         window.resize(640, 400)

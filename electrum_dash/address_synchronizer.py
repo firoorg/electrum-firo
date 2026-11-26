@@ -73,7 +73,6 @@ class SparkBalance(NamedTuple):
     total: int
     spendable: int
     pending_spendable: int
-    blocked_total: int
 
 
 class TxWalletDelta(NamedTuple):
@@ -1245,13 +1244,13 @@ class AddressSynchronizer(Logger):
 
     def get_spark_balance(self) -> SparkBalance:
         if not self.spark_enabled:
-            return SparkBalance(0, 0, 0, 0)
+            return SparkBalance(0, 0, 0)
         coins = [c for c in self.db.get('spark_coins', {}).values()
                  if not c.get('is_used')]
         total = sum(int(c['value']) for c in coins)
         spendable = sum(int(c['value']) for c in coins
                         if self.get_spark_coin_height(c))
-        return SparkBalance(total, spendable, total - spendable, 0)
+        return SparkBalance(total, spendable, total - spendable)
 
     def get_spark_coin_height(self, coin) -> Optional[int]:
         if not coin.get('tx_checked'):
@@ -1279,14 +1278,13 @@ class AddressSynchronizer(Logger):
         return out
 
     def get_spark_cover_sets(self, group_ids=None) -> list:
-        if group_ids is None:
-            group_ids = {int(c['group_id'])
-                         for c in self.get_spark_spendable_coins()}
-        shared = get_spark_shared_cache(self.config)
         own_heights = {}
         for coin in self.get_spark_spendable_coins():
             gid = int(coin['group_id'])
             own_heights[gid] = max(own_heights.get(gid, 0), int(coin['height']))
+        if group_ids is None:
+            group_ids = own_heights
+        shared = get_spark_shared_cache(self.config)
         result = []
         for groupId in sorted(group_ids):
             info = FiroCacheCoordinator.getLatestSetInfoForGroupId(shared, groupId)

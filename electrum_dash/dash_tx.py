@@ -926,13 +926,10 @@ SPEC_TX_NAMES = {
 def classify_onchain_tx_type(tx) -> int:
     if tx is None:
         return 0
-    try:
-        tx_type = tx_header_to_tx_type(bfh(tx.serialize()[:8]))
-    except Exception:
-        tx_type = int(getattr(tx, 'tx_type', 0) or 0)
+    tx_type = tx.tx_type
     if tx_type in SPARK_SPEND_TYPES:
         return tx_type
-    if any(getattr(inp, 'script_sig', None) and inp.script_sig[0] == OP_SPARKSPEND
+    if any(inp.script_sig and inp.script_sig[0] == OP_SPARKSPEND
            for inp in tx.inputs()):
         return SPARK_SPEND
     if tx_type:
