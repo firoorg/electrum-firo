@@ -181,13 +181,16 @@ class PaymentRequest:
             # the address will be displayed as requestor
             self.requestor = None
             return True
-        if pr.pki_type in ["x509+sha256", "x509+sha1"]:
-            return self.verify_x509(pr)
-        elif pr.pki_type in ["dnssec+btc", "dnssec+ecdsa"]:
-            return self.verify_dnssec(pr, contacts)
-        else:
-            self.error = "ERROR: Unsupported PKI Type for Message Signature"
+        try:
+            if pr.pki_type in ["x509+sha256", "x509+sha1"]:
+                return self.verify_x509(pr)
+            if pr.pki_type in ["dnssec+btc", "dnssec+ecdsa"]:
+                return self.verify_dnssec(pr, contacts)
+        except Exception as e:
+            self.error = f"Payment request verification failed: {e}"
             return False
+        self.error = "ERROR: Unsupported PKI Type for Message Signature"
+        return False
 
     def verify_x509(self, paymntreq):
         load_ca_list()
@@ -231,7 +234,7 @@ class PaymentRequest:
 
     def verify_dnssec(self, pr, contacts):
         sig = pr.signature
-        alias = pr.pki_data
+        alias = pr.pki_data.decode('utf-8')
         info = contacts.resolve(alias)
         if info.get('validated') is not True:
             self.error = "Alias verification failed (DNSSEC)"
@@ -342,17 +345,16 @@ class PaymentRequest:
         return True
 
 def make_unsigned_request(req: 'OnchainInvoice'):
-    addr = req.get_address()
-    time = req.time
-    exp = req.exp
+    return _make_unsigned_request(req.get_address(), req.amount_sat, req.message, req.time, req.exp)
+
+
+def _make_unsigned_request(addr, amount, memo, time, exp):
     if time and type(time) != int:
         time = 0
     if exp and type(exp) != int:
         exp = 0
-    amount = req.amount_sat
     if amount is None:
         amount = 0
-    memo = req.message
     script = bfh(address_to_script(addr))
     outputs = [(script, amount)]
     pd = pb2.PaymentDetails()
@@ -471,14 +473,16 @@ def sign_request_with_x509(pr, key_path, cert_path):
     pr.signature = bytes(sig)
 
 
-def serialize_request(req):  # FIXME this is broken
-    pr = make_unsigned_request(req)
+def serialize_request(req):
+    """Reconstruct the BIP70 message signed by a payment link's requestor."""
+    pr = _make_unsigned_request(req['address'], req.get('amount'), req.get('memo', ''),
+                                req.get('time', 0), req.get('exp', 0))
     signature = req.get('sig')
     requestor = req.get('name')
     if requestor and signature:
         pr.signature = bfh(signature)
         pr.pki_type = 'dnssec+btc'
-        pr.pki_data = str(requestor)
+        pr.pki_data = requestor.encode('utf-8')
     return pr
 
 

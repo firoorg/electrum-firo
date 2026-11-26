@@ -38,10 +38,9 @@ class Contacts(dict, Logger):
         Logger.__init__(self)
         self.db = db
         d = self.db.get('contacts', {})
-        try:
-            self.update(d)
-        except:
+        if not isinstance(d, dict):
             return
+        self.update((key, record) for key, record in d.items() if self._valid_record(record))
         # Legacy files keyed contacts by label. A stored Spark address can retain
         # its label even if native validation is unavailable on this installation.
         for k, v in list(self.items()):
@@ -125,16 +124,24 @@ class Contacts(dict, Logger):
         except AttributeError:
             return None
             
+    @staticmethod
+    def _valid_record(record):
+        return (isinstance(record, (list, tuple)) and len(record) == 2
+                and record[0] in ('address', 'openalias') and isinstance(record[1], str))
+
     def _validate(self, data):
-        for k, v in list(data.items()):
-            if k == 'contacts':
-                return self._validate(v)
-            if not is_payment_address(k):
-                if has_spark_address_prefix(k):
-                    raise FileImportFailed(_('Cannot validate this Spark address on this network: {}').format(k))
-                data.pop(k)
-            else:
-                if v[0] != 'address':
-                    data.pop(k)
-        return data
+        while isinstance(data, dict) and 'contacts' in data:
+            data = data['contacts']
+        if not isinstance(data, dict):
+            raise FileImportFailed(_('Expected a map of contact addresses and names.'))
+        contacts = {}
+        for address, record in data.items():
+            if not self._valid_record(record):
+                raise FileImportFailed(_('Invalid contact record for {}.').format(address))
+            if record[0] == 'address':
+                if is_payment_address(address):
+                    contacts[address] = record
+                elif has_spark_address_prefix(address):
+                    raise FileImportFailed(_('Cannot validate this Spark address on this network: {}').format(address))
+        return contacts
 
