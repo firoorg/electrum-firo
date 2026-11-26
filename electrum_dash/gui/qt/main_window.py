@@ -1800,8 +1800,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 self.show_error(str(e))
                 return
             self.max_button.setChecked(True)
-            self.amount_e.setAmount(tx.output_value())
-            mining_fee_str = self.format_amount_and_units(tx.get_fee())
+            self.amount_e.setAmount(tx._spark_send_amount)
+            mining_fee_str = self.format_amount_and_units(tx._spark_fee)
             QToolTip.showText(
                 self.max_button.mapToGlobal(QPoint(0, 0)),
                 _("Mining fee: {} (can be adjusted on next screen)").format(mining_fee_str))

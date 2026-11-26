@@ -1722,6 +1722,12 @@ class SparkInterfaceMixin:
         first = sparkMints[0]
         if len(sparkMints) > 1:
             first.sparkMints = sparkMints[1:]
+        # The send dialogs show only the first transaction, so it carries
+        # the totals over all of them.
+        first._spark_fee = sum(tx._spark_fee for tx in sparkMints)
+        first._spark_send_amount = sum(
+            o.value for tx in sparkMints for o in tx.outputs()
+            if o.scriptpubkey[0] == OP_SPARKMINT)
         return first
 
     def confirmSparkMintTransactions(self, sparkMints: Sequence[PartialTransaction],

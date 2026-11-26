@@ -18,7 +18,7 @@ from electrum_firo.spark_interface import (
     SparkSharedCache, SparkSynchronizer, _is_tx_not_found_error,
     _parse_group_id, _parse_set_meta, _tx_contains_spark_coin,
     is_exchange_address)
-from electrum_firo.transaction import Transaction
+from electrum_firo.transaction import PartialTransaction, PartialTxOutput, Transaction
 from electrum_firo.util import TxMinedInfo, bfh
 from electrum_firo.wallet import Abstract_Wallet
 
@@ -182,6 +182,26 @@ class TestSparkWallet(TestCaseForTestnet):
         transparent = sum(self.wallet.get_balance())
         spark = self.wallet.get_spark_balance().total
         self.assertEqual(transparent + spark, last['balance'].value)
+
+    def test_split_mint_shows_totals(self):
+        self._fund(10**8)
+
+        def mint(value, fee):
+            tx = PartialTransaction()
+            tx._outputs = [PartialTxOutput(scriptpubkey=MINT_SCRIPT, value=value)]
+            tx._spark_fee = fee
+            return tx
+        mints = [mint(1000, 10), mint(2000, 20)]
+        lib = 'electrum_firo.spark_interface.libsparkmobile'
+        with mock.patch(f'{lib}.is_available', return_value=True), \
+                mock.patch(f'{lib}.is_valid_spark_address', return_value=True), \
+                mock.patch.object(self.wallet, '_createSparkMintTransactions',
+                                  return_value=mints):
+            first = self.wallet.prepareSparkMintTransaction(
+                spark_address='spark', amount=3000)
+        self.assertEqual([mints[1]], first.sparkMints)
+        self.assertEqual(30, first._spark_fee)
+        self.assertEqual(3000, first._spark_send_amount)
 
     def test_spark_coin_needs_tx_check_and_spv(self):
         coin = _spark_coin('22' * 32, 5000, height=50)
