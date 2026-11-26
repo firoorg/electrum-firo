@@ -500,6 +500,26 @@ class TestSparkHelpers(TestCaseForTestnet):
         self.assertEqual('b' * 64, reloaded.snapshot_used_tags()['t'])
         self.assertEqual('x', reloaded.snapshot_groups()['1']['block_hash'])
 
+    def test_shared_cache_rewrites_only_changed_sets(self):
+        import os, tempfile
+        from electrum_firo import spark_interface
+        path = os.path.join(tempfile.mkdtemp(), 'cache.json')
+        cache = SparkSharedCache(path)
+        cache.update(anon_sets={'1': {'size': 2}, '2': {'size': 1}})
+        written = []
+        real_write = spark_interface._write_json
+
+        def write(p, value):
+            written.append(os.path.basename(p))
+            real_write(p, value)
+        with mock.patch.object(spark_interface, '_write_json', write):
+            cache.update(anon_sets={'1': {'size': 2}, '2': {'size': 3}})
+        self.assertEqual(['2.json', 'cache.json'], written)
+        self.assertEqual({'1': {'size': 2}, '2': {'size': 3}},
+                         SparkSharedCache(path).snapshot_anon_sets())
+        cache.clear()
+        self.assertEqual({}, SparkSharedCache(path).snapshot_anon_sets())
+
     def test_extended_timeouts_are_reference_counted(self):
         session = object.__new__(NotificationSession)
         session._extended_timeouts = []

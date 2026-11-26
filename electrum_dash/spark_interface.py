@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import random
+import shutil
 import threading
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
@@ -35,7 +36,9 @@ OP_SPARKSPEND = 0xd3
 MINT_INPUT_SEQUENCE = 0xffffffff - 1
 SPEND_MISSING_CHECKS_BEFORE_RELEASE = 3
 MAX_SPARK_SET_SIZE = 32_768
-MAX_SPARK_GROUP_ID = 100_000
+# Mainnet had 11 groups in November 2026. The cap bounds how many full sets a
+# server can make the wallet download and store.
+MAX_SPARK_GROUP_ID = 1_000
 MAX_SPARK_GROUPS_PER_REFRESH = 4
 SPARK_SET_CACHE_VERSION = 2
 SPARK_COIN_CHECK_VERSION = 2
@@ -262,15 +265,15 @@ def _anon_set_entry_size(entry) -> int:
         return 0
 
 
-def _merge_anon_sets(existing: dict, incoming: dict) -> bool:
-    changed = False
+def _merge_anon_sets(existing: dict, incoming: dict) -> List[str]:
+    changed = []
     for gid, entry in (incoming or {}).items():
         current = existing.get(gid)
         if (current is None
                 or _anon_set_entry_size(entry) >= _anon_set_entry_size(current)):
             if current != entry:
                 existing[gid] = entry
-                changed = True
+                changed.append(gid)
     return changed
 
 
@@ -298,7 +301,28 @@ def get_spark_shared_cache(config) -> 'SparkSharedCache':
         return cache
 
 
+def _read_json(path: str):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+
+
+def _write_json(path: str, value) -> None:
+    tmp = f'{path}.tmp'
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(value, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        _logger.error(f'could not write spark shared cache {path}: {e!r}')
+
+
 class SparkSharedCache:
+    # Used tags and groups are kept in `path`, and each anonymity set in its
+    # own file in `sets_dir`, so an update rewrites only the sets that changed.
     _EMPTY = {
         'spark_anon_sets': {},
         'spark_used_tags': {},
@@ -307,6 +331,7 @@ class SparkSharedCache:
 
     def __init__(self, path: str):
         self.path = path
+        self.sets_dir = os.path.splitext(path)[0] + '_sets'
         self._lock = threading.RLock()
         self._data = json.loads(json.dumps(self._EMPTY))
         self._load_locked()
@@ -326,35 +351,41 @@ class SparkSharedCache:
     def snapshot_groups(self) -> dict:
         return self.get('spark_groups', {}) or {}
 
-    def _load_locked(self) -> None:
-        try:
-            with open(self.path, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
-        except (FileNotFoundError, OSError, ValueError):
-            return
+    def _set_path(self, gid) -> str:
+        return os.path.join(self.sets_dir, f'{gid}.json')
+
+    def _load_locked(self, gids=None) -> None:
+        """Reads the used tags, the groups, and the sets in `gids` (all if None)."""
+        loaded = _read_json(self.path)
         if isinstance(loaded, dict):
-            for key in self._EMPTY:
+            for key in ('spark_used_tags', 'spark_groups'):
                 if key in loaded:
                     self._data[key] = loaded[key]
+        if gids is None:
+            try:
+                gids = [name[:-len('.json')] for name in os.listdir(self.sets_dir)
+                        if name.endswith('.json')]
+            except OSError:
+                gids = []
+        for gid in gids:
+            entry = _read_json(self._set_path(gid))
+            if entry is not None:
+                self._data['spark_anon_sets'][gid] = entry
 
-    def _flush_locked(self) -> None:
-        tmp = f'{self.path}.tmp'
-        try:
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(self._data, f)
-            os.replace(tmp, self.path)
-        except OSError as e:
-            _logger.error(
-                f'could not write spark shared cache {self.path}: {e!r}')
+    def _flush_locked(self, gids) -> None:
+        for gid in gids:
+            _write_json(self._set_path(gid), self._data['spark_anon_sets'][gid])
+        _write_json(self.path, {key: value for key, value in self._data.items()
+                                if key != 'spark_anon_sets'})
 
     def update(self, *, anon_sets=None, used_tags=None, groups=None) -> None:
         with self._lock:
-            self._load_locked()
-            changed = False
-            for key, incoming, merge in (
-                    ('spark_anon_sets', anon_sets, _merge_anon_sets),
-                    ('spark_used_tags', used_tags, _merge_dict),
-                    ('spark_groups', groups, _merge_dict)):
+            self._load_locked(gids=list(anon_sets or ()))
+            changed_sets = _merge_anon_sets(
+                self._data['spark_anon_sets'], _deepcopy_db_val(anon_sets))
+            changed = bool(changed_sets)
+            for key, incoming in (('spark_used_tags', used_tags),
+                                  ('spark_groups', groups)):
                 if incoming is None:
                     continue
                 incoming = json.loads(json.dumps(incoming))
@@ -362,14 +393,15 @@ class SparkSharedCache:
                 if not isinstance(stored, dict):
                     stored = self._data[key] = {}
                     changed = True
-                changed |= merge(stored, incoming)
+                changed |= _merge_dict(stored, incoming)
             if changed:
-                self._flush_locked()
+                self._flush_locked(changed_sets)
 
     def clear(self) -> None:
         with self._lock:
             self._data = json.loads(json.dumps(self._EMPTY))
-            self._flush_locked()
+            shutil.rmtree(self.sets_dir, ignore_errors=True)
+            self._flush_locked([])
 
 
 class FiroCacheCoordinator:
