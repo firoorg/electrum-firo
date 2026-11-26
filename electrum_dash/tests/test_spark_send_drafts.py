@@ -42,6 +42,32 @@ class TestSparkSendDrafts(SparkQtTestCase):
         self.assertFalse(window.max_button.isChecked())
         self.assertIsNone(window.amount_e.get_amount())
 
+    def test_max_from_spark_uses_the_fee_estimate_without_building_a_spend(self):
+        window = self.open_wallet(spark_funds=8 * COIN)
+        window.payto_e.setPlainText(SPARK_ADDRESS)
+        with mock.patch.object(window.wallet, 'estimateSparkSendAll',
+                               return_value=(8 * COIN - 500, 500)) as quote, \
+                mock.patch.object(window.wallet, 'prepareSendSpark') as build:
+            window.spend_max()
+        quote.assert_called_once_with(SPARK_ADDRESS, None)
+        build.assert_not_called()
+        self.assertTrue(window.max_button.isChecked())
+        self.assertEqual(8 * COIN - 500, window.amount_e.get_amount())
+
+    def test_short_funds_message_for_spark_routes(self):
+        from electrum_firo.gui.qt.confirm_tx_dialog import PaymentRoute
+        window = self.open_wallet()
+        dialog = mock.Mock(route=PaymentRoute(SPARK_ADDRESS, True, True), output_value=COIN)
+        with mock.patch.object(window.wallet, 'get_balance', return_value=(2 * COIN, 0, 0)):
+            window._on_conf_dlg_not_enough_funds(dialog, None)
+        self.assertIn('set Pay from to Transparent', window.show_message.call_args.args[0])
+        # A move into Spark has no lower fee to offer, so it reports at once.
+        dialog.route = PaymentRoute(SPARK_ADDRESS, False, True)
+        window._on_conf_dlg_not_enough_funds(dialog, None)
+        self.assertEqual(window.get_text_not_enough_funds_mentioning_frozen(),
+                         window.show_message.call_args.args[0])
+        dialog.bg_check_have_enough_funds_assuming_zero_fees.assert_not_called()
+
     def test_pasted_payment_link_replaces_whole_draft_only_on_consent(self):
         window = self.open_wallet()
         first, second = window.wallet.get_receiving_addresses()[:2]

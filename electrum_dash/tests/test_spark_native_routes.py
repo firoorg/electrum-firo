@@ -7,7 +7,7 @@ from electrum_firo.bitcoin import COIN
 from electrum_firo.dash_tx import SPARK_SPEND_V2
 from electrum_firo.spark_interface import (
     OP_SPARKMINT, OP_SPARKSMINT, SPARK_CHAUM_V2_START_HEIGHT,
-    SPARK_GROUP_ELEMENT_SIZE, _canonical_spark_coin,
+    SPARK_GROUP_ELEMENT_SIZE, _canonical_spark_coin, spark_spend_fee,
 )
 from electrum_firo.transaction import (
     BCDataStream, PartialTransaction, PartialTxInput, PartialTxOutput, Transaction, TxOutpoint,
@@ -122,6 +122,16 @@ class TestNativePaymentRoutes(SparkQtTestCase):
         window.update_wallet()
         private = self.review(window, True, other, COIN)
         self.assertEqual(private.tx_type, SPARK_SPEND_V2)
+        # The fee shown before sending is the one the transaction declares,
+        # so the details dialog can show it afterwards.
+        self.assertEqual(spark_spend_fee(private), private._spark_fee)
+        self.assertEqual(wallet.get_tx_info(private).fee, private._spark_fee)
+        # Max is quoted from the fee estimate alone. It must match what the
+        # built transaction then pays.
+        everything = wallet.prepareSendSpark(address=other, amount='!')
+        self.assertEqual(wallet.estimateSparkSendAll(other),
+                         (everything._spark_send_amount, everything._spark_fee))
+        self.assertIsNone(wallet.db.get('spark_view_key_hex'))
         spend_context = self.spend_context(private)
         recovered_outputs = [self.recover(o.scriptpubkey, spend_context, other_key)
                              for o in private.outputs() if o.scriptpubkey[0] == OP_SPARKSMINT]
