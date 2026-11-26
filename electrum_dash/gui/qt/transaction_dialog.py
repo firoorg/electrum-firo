@@ -433,6 +433,10 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
         amount, fee = tx_details.amount, tx_details.fee
         size = self.tx.estimated_size()
         txid = self.tx.txid()
+        history_item = self.main_window.history_model.transactions.get(txid, {}) if self.finalized else {}
+        spark_activity = history_item.get('spark_activity')
+        if spark_activity:
+            amount = history_item['bc_value'].value
         fx = self.main_window.fx
         tx_item_fiat = None
         if (self.finalized  # ensures we don't use historical rates for tx being constructed *now*
@@ -487,10 +491,14 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
         else:
             self.block_hash_label.hide()
             self.block_height_label.hide()
-        if amount is None:
-            amount_str = _("Transaction unrelated to your wallet")
+        if 'spark_moved' in history_item:
+            amount_str = _('Moved to Spark: {}').format(
+                self.main_window.format_amount_and_units(history_item['spark_moved'].value))
+        elif spark_activity:
+            amount_str = _('{}\nNet wallet change: {} {}').format(
+                spark_activity, format_amount(amount, is_diff=True), base_unit)
         elif amount is None:
-            amount_str = ''
+            amount_str = _("Transaction unrelated to your wallet")
         else:
             if amount > 0:
                 amount_str = _("Amount received:") + ' %s'% format_amount(amount) + ' ' + base_unit

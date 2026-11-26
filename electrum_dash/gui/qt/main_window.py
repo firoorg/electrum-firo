@@ -81,6 +81,7 @@ from electrum_firo.network import (Network, TxBroadcastError, BestEffortRequestF
                                    UntrustedServerReturnedError, NetworkException)
 from electrum_firo.exchange_rate import FxThread
 from electrum_firo.simple_config import SimpleConfig
+from electrum_firo.spark_interface import is_exchange_address, spark_mint_amount
 from electrum_firo.logging import Logger
 
 from .exception_window import Exception_Hook
@@ -101,7 +102,7 @@ from .util import ButtonsTextEdit, ButtonsLineEdit
 from .installwizard import WIF_HELP_TEXT
 from .history_list import HistoryList, HistoryModel
 from .update_checker import UpdateCheck, UpdateCheckThread
-from .confirm_tx_dialog import ConfirmTxDialog
+from .confirm_tx_dialog import ConfirmTxDialog, PaymentRoute
 from .transaction_dialog import PreviewTxDialog
 from .qrreader import scan_qrcode
 from .dash_qt import ExtraPayloadWidget
@@ -210,8 +211,7 @@ def ps_ks_protected(func):
 
 class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
-    payment_request_ok_signal = pyqtSignal()
-    payment_request_error_signal = pyqtSignal()
+    payment_request_received = pyqtSignal(object, object, bool)
     network_signal = pyqtSignal(str, object)
     alias_received_signal = pyqtSignal()
     computing_privkeys_signal = pyqtSignal()
@@ -230,6 +230,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.gui_thread = gui_object.gui_thread
         assert wallet, "no wallet"
         self.wallet = wallet
+        self.has_hardware_keystore = any(isinstance(ks, keystore.Hardware_KeyStore)
+                                         for ks in wallet.get_keystores())
 
         Exception_Hook.maybe_setup(config=self.config, wallet=self.wallet)
 
@@ -262,8 +264,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
         self.tabs = tabs = QTabWidget(self)
         self.tabs.currentChanged.connect(self.on_tabs_switch)
-        self.send_tab = self.create_send_tab()
-        self.receive_tab = self.create_receive_tab()
+        self.send_tab = self.scrollable_payment_tab(self.create_send_tab())
+        self.receive_tab = self.scrollable_payment_tab(self.create_receive_tab())
         self.addresses_tab = self.create_addresses_tab()
         self.utxo_tab = self.create_utxo_tab()
         self.dip3_tab = create_dip3_tab(self, wallet)
@@ -292,10 +294,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
         tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        central_widget = QScrollArea()
+        central_widget = QWidget()
         central_widget.setObjectName("central_widget")
         vbox = QVBoxLayout(central_widget)
         vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.addWidget(self.create_balance_panel())
         vbox.addWidget(tabs)
         vbox.addWidget(coincontrol_sb)
 
@@ -320,8 +323,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         for i in range(wrtabs.count()):
             QShortcut(QKeySequence("Alt+" + str(i + 1)), self, lambda i=i: wrtabs.setCurrentIndex(i))
 
-        self.payment_request_ok_signal.connect(self.payment_request_ok)
-        self.payment_request_error_signal.connect(self.payment_request_error)
+        self.payment_request_received.connect(self.on_pr)
         self.show_error_signal.connect(self.show_error)
         self.history_list.setFocus(True)
 
@@ -357,6 +359,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.fetch_alias()
 
         self.show_backup_msg()
+        self.init_spark_session()
         # PrivateSend manager callbacks
         self.ps_signal.connect(self.on_ps_signal)
         util.register_callback(self.on_ps_callback,
@@ -417,6 +420,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
     def on_fx_quotes(self):
         self.update_status()
+        self.update_balances()
         # Refresh edits with the new rate
         edit = self.fiat_send_e if self.fiat_send_e.is_last_edited else self.amount_e
         edit.textEdited.emit(edit.text())
@@ -695,7 +699,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.setGeometry(*winpos)
         except:
             self.logger.info("using default geometry")
-            self.setGeometry(100, 100, 840, 400)
+            screen = self.app.desktop().availableGeometry(self)
+            size = QSize(920, 680).boundedTo(screen.size())
+            rect = QRect(QPoint(), size)
+            rect.moveCenter(screen.center())
+            self.setGeometry(rect)
 
     def watching_only_changed(self):
         name = "Firo Electrum"
@@ -889,6 +897,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
         wallet_menu.addSeparator()
         wallet_menu.addAction(_("Find"), self.toggle_search).setShortcut(QKeySequence("Ctrl+F"))
+        self.spark_rescan_menu = wallet_menu.addAction(_("Rescan Spark"), self.rescan_spark)
+        self.spark_rescan_menu.setVisible(False)
 
         def add_toggle_action(view_menu, tab):
             is_shown = self.config.get('show_{}_tab'.format(tab.tab_name), False)
@@ -1092,7 +1102,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         def edit_changed(edit):
             if edit.follows:
                 return
-            edit.setStyleSheet(ColorScheme.DEFAULT.as_stylesheet())
+            edit.setStyleSheet('')  # back to the theme's text colour
             fiat_e.is_last_edited = (edit == fiat_e)
             amount = edit.get_amount()
             rate = self.fx.exchange_rate() if self.fx else Decimal('NaN')
@@ -1148,15 +1158,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 text = _("Server is lagging ({} blocks)").format(server_lag)
                 icon = read_QIcon("status_lagging%s.png"%fork_str)
             else:
-                c, u, x = self.wallet.get_balance()
-                text =  _("Balance") + ": %s "%(self.format_amount_and_units(c))
-                if u:
-                    text +=  " [%s unconfirmed]"%(self.format_amount(u, is_diff=True).strip())
-                if x:
-                    text +=  " [%s unmatured]"%(self.format_amount(x, is_diff=True).strip())
-                # append fiat balance and price
+                text = _("Connected")
                 if self.fx.is_enabled():
-                    text += self.fx.get_fiat_status_text(c + u + x,
+                    balance = sum(self.wallet.get_balance())
+                    if self.wallet.spark_enabled:
+                        balance += self.wallet.get_spark_balance().total
+                    text += self.fx.get_fiat_status_text(balance,
                         self.base_unit(), self.get_decimal_point()) or ''
                 if not self.network.proxy:
                     icon = read_QIcon("status_connected%s.png"%fork_str)
@@ -1173,11 +1180,153 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         if self.tray:
             self.tray.setToolTip("%s (%s)" % (text, self.wallet.basename()))
         self.balance_label.setText(text)
+        self.update_send_mode_balance()
         if self.status_button:
             self.status_button.setIcon(icon)
 
+    def create_balance_panel(self):
+        panel = QWidget()
+        panel.setObjectName('wallet_balances')
+        grid = QGridLayout(panel)
+        grid.setColumnStretch(2, 1)
+        self.spark_balance_name = QLabel(_('Spark (private)'))
+        self.spark_available_label = QLabel()
+        self.spark_detail_label = QLabel()
+        self.transparent_balance_name = QLabel(_('Transparent'))
+        self.transparent_available_label = QLabel()
+        self.transparent_detail_label = QLabel()
+        self.transparent_detail_label.setWordWrap(True)
+        self.spark_detail_label.setWordWrap(True)
+        for row, labels in enumerate((
+                (self.spark_balance_name, self.spark_available_label, self.spark_detail_label),
+                (self.transparent_balance_name, self.transparent_available_label, self.transparent_detail_label))):
+            for column, (label, name) in enumerate(zip(labels, ('balance_name', 'balance_available', 'balance_detail'))):
+                label.setObjectName(name)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                grid.addWidget(label, row, column)
+        self.enable_spark_button = QPushButton()
+        self.enable_spark_button.clicked.connect(self.init_spark_session)
+        grid.addWidget(self.enable_spark_button, 0, 3)
+        self.move_to_spark_button = QPushButton(_('Move to Spark'))
+        self.move_to_spark_button.clicked.connect(self.move_to_spark)
+        grid.addWidget(self.move_to_spark_button, 1, 3)
+        self.balance_details_button = QPushButton(_('Details'))
+        self.balance_details_button.setAccessibleName(_('Balance details'))
+        self.balance_details_button.clicked.connect(self.show_balance_details)
+        grid.addWidget(self.balance_details_button, 0, 2, 2, 1, Qt.AlignRight)
+        self.update_balances()
+        return panel
+
+    def show_balance_details(self):
+        rows = []
+        for name, amount, detail in (
+                (self.spark_balance_name, self.spark_available_label, self.spark_detail_label),
+                (self.transparent_balance_name, self.transparent_available_label, self.transparent_detail_label)):
+            if not name.isHidden():
+                rows.append('\n'.join(filter(None, (name.text(), amount.text(), detail.text()))))
+        self.show_message('\n\n'.join(rows), title=_('Balance details'))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'balance_details_button'):
+            self.update_balance_layout()
+
+    def update_balance_layout(self):
+        compact = self.width() < self.fontMetrics().averageCharWidth() * 90
+        self.spark_available_label.setWordWrap(compact)
+        self.transparent_available_label.setWordWrap(compact)
+        grid = self.balance_details_button.parentWidget().layout()
+        grid.setColumnStretch(1, int(compact))
+        grid.setColumnStretch(2, int(not compact))
+        has_spark_detail = not self.spark_balance_name.isHidden() and bool(self.spark_detail_label.text())
+        has_transparent_detail = bool(self.transparent_detail_label.text())
+        self.spark_detail_label.setVisible(has_spark_detail and not compact)
+        self.transparent_detail_label.setVisible(has_transparent_detail and not compact)
+        self.balance_details_button.setVisible(compact and (has_spark_detail or has_transparent_detail))
+        qr_size = 140 if self.height() < 480 else 186
+        if self.receive_qr.width() != qr_size:
+            self.receive_qr.setFixedSize(qr_size, qr_size)
+
+    def update_balances(self):
+        from electrum_firo import libsparkmobile
+        wallet = self.wallet
+        eligible = wallet.can_use_spark()
+        for widget in (self.spark_balance_name, self.spark_available_label, self.spark_detail_label):
+            widget.setVisible(eligible)
+        enabled = wallet.spark_enabled
+        self.enable_spark_button.setVisible(eligible and libsparkmobile.is_available() and not enabled)
+        self.move_to_spark_button.setVisible(enabled)
+        if eligible:
+            detail = ''
+            if enabled:
+                spark = wallet.get_spark_balance()
+                sync = wallet.spark_synchronizer
+                scan_status = wallet.get_spark_scan_status()
+                if scan_status == 'complete':
+                    amount = _('{} available').format(self.format_amount_and_units(spark.spendable))
+                elif scan_status == 'retrying':
+                    amount = _('Retrying Spark sync')
+                elif spark.total:
+                    amount = _('{} found so far').format(self.format_amount_and_units(spark.total))
+                elif scan_status == 'partial':
+                    amount = _('Spark scan incomplete')
+                else:
+                    amount = _('Waiting for Spark sync')
+                if spark.pending_spendable:
+                    detail = _('{} pending · {} total').format(
+                        self.config.format_amount_and_units(spark.pending_spendable),
+                        self.config.format_amount_and_units(spark.total))
+                if sync and sync.syncing and scan_status != 'retrying':
+                    detail = ' · '.join(filter(None, [detail, _('Syncing')]))
+            elif not libsparkmobile.is_available():
+                amount = _('Spark library unavailable')
+            elif wallet.has_keystore_encryption():
+                amount = _('Locked')
+                self.enable_spark_button.setText(_('Unlock Spark'))
+            else:
+                amount = _('Disabled for this session')
+                self.enable_spark_button.setText(_('Enable Spark'))
+            self.spark_available_label.setText(amount)
+            self.spark_detail_label.setText(detail)
+
+        c, pending, immature = wallet.get_balance()
+        coins = self.get_coins(wallet_wide=True)
+        available = sum(coin.value_sats() for coin in coins)
+        self.transparent_available_label.setText(_('{} available').format(self.format_amount_and_units(available)))
+        details = []
+        if pending:
+            details.append(_('{} unconfirmed').format(self.config.format_amount_and_units(pending)))
+        if immature:
+            details.append(_('{} immature').format(self.config.format_amount_and_units(immature)))
+        total = c + pending + immature
+        if total != available or pending:
+            details.append(_('{} total').format(self.config.format_amount_and_units(total)))
+        self.transparent_detail_label.setText(' · '.join(details))
+        self.move_to_spark_button.setEnabled(available > 0)
+        self.update_balance_layout()
+
+    def move_to_spark(self):
+        if not self.wallet.spark_enabled:
+            return
+        if self.has_payment_draft():
+            if not self.question(_('Replace the current payment draft with a transfer to your Spark balance?')):
+                return
+        try:
+            address = self.wallet.getCurrentReceivingSparkAddress()
+        except Exception as e:
+            self.show_error(str(e))
+            return
+        self.do_clear()
+        self.send_from_private = False
+        self.show_send_tab()
+        self.payto_e.setText(address)
+        self.update_send_mode_balance()
+        self.update_available_amount()
+        self.amount_e.setFocus()
+
     def update_wallet(self):
         self.update_status()
+        self.update_balances()
         if self.wallet.up_to_date or not self.network or not self.network.is_connected():
             self.update_tabs()
 
@@ -1217,10 +1366,22 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         '''tx_desc is set only for txs created in the Send tab'''
         show_transaction(tx, parent=self, desc=tx_desc)
 
+    @staticmethod
+    def scrollable_payment_tab(content):
+        scroll = QScrollArea()
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setWidgetResizable(True)
+        content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        scroll.setWidget(content)
+        scroll.searchable_list = content.searchable_list
+        return scroll
+
     def create_receive_tab(self):
         # A 4-column grid layout.  All the stretch is in the last column.
         # The exchange rate plugin adds a fiat widget in column 2
-        self.receive_grid = grid = QGridLayout()
+        self.receive_request_form = QWidget()
+        self.receive_grid = grid = QGridLayout(self.receive_request_form)
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(8)
         grid.setColumnStretch(3, 1)
 
@@ -1274,9 +1435,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
         self.clear_invoice_button = QPushButton(_('Clear'))
         self.clear_invoice_button.clicked.connect(self.clear_receive_tab)
-        self.create_invoice_button = QPushButton(_('New Address'))
-        self.create_invoice_button.setIcon(read_QIcon("firocoin.png"))
-        self.create_invoice_button.setToolTip('Create on-chain request')
+        self.create_invoice_button = QPushButton(_('Create payment request'))
         self.create_invoice_button.clicked.connect(lambda: self.create_invoice())
         self.receive_buttons = buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -1286,65 +1445,87 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
         self.receive_payreq_e = ButtonsTextEdit()
         self.receive_payreq_e.setFont(QFont(MONOSPACE_FONT))
-        self.receive_payreq_e.addCopyButton(self.app)
+        self.receive_payreq_e.setMaximumHeight(65)
         self.receive_payreq_e.setReadOnly(True)
         self.receive_payreq_e.textChanged.connect(self.update_receive_qr)
         self.receive_payreq_e.setFocusPolicy(Qt.ClickFocus)
 
-        self.receive_qr = QRCodeWidget(fixedSize=220)
-        self.receive_qr.mouseReleaseEvent = lambda x: self.toggle_qr_window()
-        self.receive_qr.enterEvent = lambda x: self.app.setOverrideCursor(QCursor(Qt.PointingHandCursor))
-        self.receive_qr.leaveEvent = lambda x: self.app.setOverrideCursor(QCursor(Qt.ArrowCursor))
+        self.receive_qr = QRCodeWidget(fixedSize=186)
+        self.receive_qr.setCursor(Qt.PointingHandCursor)
+        self.receive_qr.mouseReleaseEvent = lambda event: self.show_receive_qr_window()
+        self.enlarge_qr_button = QPushButton(_('Enlarge QR code'))
+        self.enlarge_qr_button.clicked.connect(self.show_receive_qr_window)
 
         self.receive_address_e = ButtonsTextEdit()
         self.receive_address_e.setFont(QFont(MONOSPACE_FONT))
-        self.receive_address_e.addCopyButton(self.app)
         self.receive_address_e.setReadOnly(True)
+        self.receive_address_e.setMaximumHeight(78)
         self.receive_address_e.textChanged.connect(self.update_receive_address_styling)
 
-        qr_show = lambda: self.show_qrcode(str(self.receive_address_e.text()), _('Receiving address'), parent=self)
-        qr_icon = "qrcode_white.png" if ColorScheme.dark_scheme else "qrcode.png"
-        self.receive_address_e.addButton(qr_icon, qr_show, _("Show as QR code"))
+        self.receive_type_combo = QComboBox()
+        self.receive_type_combo.addItem(_('Spark (private)'), True)
+        self.receive_type_combo.addItem(_('Transparent'), False)
+        self.receive_type_combo.setCurrentIndex(1)
+        self.receive_type_combo.hide()
+        self.receive_type_combo.setAccessibleName(_('Receive address type'))
+        self.receive_type_label = QLabel(_('Transparent address'))
+        self.receive_help = WWLabel('')
+        self.receive_type_combo.currentIndexChanged.connect(self.set_receive_mode)
 
-        self.receive_requests_label = QLabel(_('Receive queue'))
+        self.copy_receive_button = QPushButton(_('Copy address'))
+        self.copy_receive_button.setObjectName('primary_action')
+        self.copy_receive_button.clicked.connect(self.copy_receive_destination)
+        self.copy_address_button = QPushButton(_('Copy address'))
+        self.copy_address_button.clicked.connect(
+            lambda: self.do_copy(self.receive_address_e.text(), title=_('Address')))
+        self.new_spark_address_button = QPushButton(_('New Spark address'))
+        self.new_spark_address_button.clicked.connect(self.create_spark_address)
+        self.new_spark_address_button.hide()
+        self.copy_receive_button.setEnabled(False)
+        self.receive_address_e.textChanged.connect(self.update_receive_qr)
+
+        self.receive_requests_label = QLabel(_('Payment requests'))
+        self.receive_request_label = QLabel(_('Payment request URI'))
+        self.receive_payreq_e.textChanged.connect(self.update_receive_request_visibility)
+        self.update_receive_request_visibility()
 
         from .request_list import RequestList
         self.request_list = RequestList(self)
-
-        receive_tabs = QTabWidget()
-        receive_tabs.addTab(self.receive_address_e, _('Address'))
-        receive_tabs.addTab(self.receive_payreq_e, _('Request'))
-        receive_tabs.addTab(self.receive_qr, _('QR Code'))
-        receive_tabs.setCurrentIndex(self.config.get('receive_tabs_index', 0))
-        receive_tabs.currentChanged.connect(lambda i: self.config.set_key('receive_tabs_index', i))
-        receive_tabs_sp = receive_tabs.sizePolicy()
-        receive_tabs_sp.setRetainSizeWhenHidden(True)
-        receive_tabs.setSizePolicy(receive_tabs_sp)
-
-        def maybe_hide_receive_tabs():
-            receive_tabs.setVisible(bool(self.receive_payreq_e.text()))
-        self.receive_payreq_e.textChanged.connect(maybe_hide_receive_tabs)
-        maybe_hide_receive_tabs()
-
-        # layout
-        vbox_g = QVBoxLayout()
-        vbox_g.addLayout(grid)
-        vbox_g.addStretch()
-        hbox = QHBoxLayout()
-        hbox.addLayout(vbox_g)
-        hbox.addStretch()
-        hbox.addWidget(receive_tabs)
 
         w = QWidget()
         w.setObjectName("receive_container")
         w.searchable_list = self.request_list
         vbox = QVBoxLayout(w)
+        type_row = QHBoxLayout()
+        type_row.addWidget(self.receive_type_label)
+        type_row.addWidget(self.receive_type_combo)
+        type_row.addStretch()
+        hbox = QHBoxLayout()
+        address_box = QVBoxLayout()
+        address_box.addLayout(type_row)
+        address_box.addWidget(self.receive_help)
+        address_box.addWidget(self.receive_address_e)
+        address_buttons = QHBoxLayout()
+        address_buttons.addWidget(self.copy_receive_button)
+        address_buttons.addWidget(self.copy_address_button)
+        address_buttons.addWidget(self.new_spark_address_button)
+        address_buttons.addStretch()
+        address_box.addLayout(address_buttons)
+        address_box.addWidget(self.receive_request_label)
+        address_box.addWidget(self.receive_payreq_e)
+        address_box.addStretch()
+        hbox.addLayout(address_box, 1)
+        qr_box = QVBoxLayout()
+        qr_box.addWidget(self.receive_qr, 0, Qt.AlignHCenter)
+        qr_box.addWidget(self.enlarge_qr_button, 0, Qt.AlignHCenter)
+        qr_box.addStretch()
+        hbox.addLayout(qr_box)
         vbox.addLayout(hbox)
-
+        vbox.addWidget(self.receive_request_form)
         vbox.addStretch(1)
         vbox.addWidget(self.receive_requests_label)
         vbox.addWidget(self.request_list)
-        vbox.setStretchFactor(self.request_list, 1000)
+        self.set_receive_mode()
 
         return w
 
@@ -1393,11 +1574,137 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         # clear request fields
         self.receive_amount_e.setText('')
         self.receive_message_e.setText('')
-        # copy to clipboard
-        r = self.wallet.get_request(key)
-        content = r.get_address()
-        title = _('Address')
-        self.do_copy(content, title=title)
+        self.do_copy(self.wallet.get_request_URI(self.wallet.get_request(key)), title=_('Payment request'))
+
+    def init_spark_session(self):
+        from electrum_firo import libsparkmobile
+        if self.wallet.spark_enabled or not self.wallet.can_use_spark() or not libsparkmobile.is_available():
+            return
+
+        encrypted = self.wallet.has_keystore_encryption()
+        notice = '\n\n' + _(
+            'Note: the server you are connected to can tell which Spark '
+            'transactions are yours, because the wallet downloads them to '
+            'verify your coins.')
+        if not encrypted and not self.question(
+                _('Do you want to enable Spark for this session?') + notice):
+            return
+        while True:
+            password = self.password_dialog(_(
+                'Enter your wallet password to enable Spark, '
+                'or press Cancel to disable Spark for this session.'
+            ) + notice) if encrypted else None
+            if encrypted and password is None:
+                return
+            try:
+                self.wallet.enable_spark(password)
+                break
+            except Exception as e:
+                self.show_error(str(e))
+                if not encrypted:
+                    return
+
+        if not self.has_payment_draft():
+            self.send_from_private = True
+        self.receive_type_combo.setVisible(True)
+        self.receive_type_combo.setCurrentIndex(self.receive_type_combo.findData(True))
+        self.spark_rescan_menu.setVisible(True)
+        self.update_send_mode_balance()
+        self.update_available_amount()
+        self.update_balances()
+        self.payto_e.check_text()
+        self.update_status()
+        self.history_model.refresh('Spark enabled')
+
+    def rescan_spark(self):
+        if not self.wallet.spark_enabled or not self.wallet.spark_synchronizer:
+            return
+        if not self.question(_(
+                'Rescan Spark?') + '\n\n' + _(
+                'The Spark anonymity sets will be downloaded again and your '
+                'Spark coins found again from scratch. This can take a while.')):
+            return
+        self.wallet.spark_synchronizer.trigger_recover()
+        self.update_status()
+
+    def toggle_send_balance_mode(self, index):
+        if not self.wallet.spark_enabled:
+            return
+        self.send_from_private = bool(self.send_source_combo.itemData(index))
+        self.update_send_mode_balance()
+        self.update_available_amount()
+        if self.max_button.isChecked():
+            self.spend_max()
+
+    def update_send_mode_balance(self):
+        if not hasattr(self, 'send_source_combo'):
+            return
+        spark_on = bool(self.wallet.spark_enabled)
+        if not spark_on:
+            self.send_from_private = False
+        self.send_source_combo.setVisible(spark_on)
+        self.send_source_fixed.setVisible(not spark_on)
+        self.send_source_combo.setCurrentIndex(self.send_source_combo.findData(self.send_from_private))
+        if hasattr(self, 'send_button'):
+            self.update_send_route()
+
+    def set_receive_mode(self):
+        spark = bool(self.receive_type_combo.currentData())
+        self.receive_type_label.setText(_('Address type') if self.wallet.spark_enabled else _('Transparent address'))
+        self.receive_request_form.setVisible(not spark)
+        self.new_spark_address_button.setVisible(spark)
+        self.request_list.clearSelection()
+        self.receive_payreq_e.setText('')
+        self.receive_address_e.setText('')
+        if spark:
+            self.receive_help.setText(_('The recipient address and payment amount are hidden on-chain for Spark-to-Spark payments.'))
+            try:
+                self.receive_address_e.setText(self.wallet.getCurrentReceivingSparkAddress())
+            except Exception as e:
+                self.show_error(str(e))
+        else:
+            if self.has_hardware_keystore:
+                hint = _('This hardware wallet receives transparent FIRO, including payments sent from Spark. '
+                         'The receiving address and amount are public on-chain.')
+            elif self.wallet.spark_enabled:
+                hint = _('The receiving address and amount are public on-chain.')
+            elif self.wallet.can_use_spark():
+                hint = _('The receiving address and amount are public on-chain. Enable Spark to receive privately.')
+                from electrum_firo import libsparkmobile
+                if not libsparkmobile.is_available():
+                    hint = _('This installation lacks the Spark library. The receiving address and amount are public on-chain.')
+            else:
+                hint = _('This wallet supports transparent addresses only. The receiving address and amount are public on-chain.')
+            self.receive_help.setText(hint)
+            self.show_unused_receive_address()
+        self.request_list.update()
+        self.update_receive_request_visibility()
+        self.update_receive_qr()
+
+    def show_unused_receive_address(self):
+        self.receive_payreq_e.setText('')
+        self.receive_address_e.setText(self.wallet.get_unused_address() or '')
+
+    def update_receive_request_visibility(self):
+        show = bool(self.receive_payreq_e.text()) and not self.receive_type_combo.currentData()
+        self.receive_request_label.setVisible(show)
+        self.receive_payreq_e.setVisible(show)
+        self.copy_receive_button.setText(_('Copy payment request') if show else _('Copy address'))
+        self.copy_address_button.setVisible(show)
+
+    def copy_receive_destination(self):
+        uri = self.receive_payreq_e.text()
+        self.do_copy(uri or self.receive_address_e.text(), title=_('Payment request') if uri else _('Address'))
+
+    def create_spark_address(self):
+        if not self.wallet.spark_enabled:
+            return
+        try:
+            addr = self.wallet.generateNextSparkAddress(saveToDB=True)
+        except Exception as e:
+            self.show_error(_('Error generating Spark address') + ':\n' + str(e))
+            return
+        self.receive_address_e.setText(addr)
 
     def create_bitcoin_request(self, amount: int, message: str, expiration: int) -> Optional[str]:
         addr = self.wallet.get_unused_address()
@@ -1422,8 +1729,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         except Exception as e:
             self.logger.exception('Error adding payment request')
             self.show_error(_('Error adding payment request') + ':\n' + repr(e))
-        else:
-            self.sign_payment_request(addr)
+            return None
+        self.sign_payment_request(addr)
         return addr
 
     def do_copy(self, content: str, *, title: str = None) -> None:
@@ -1435,27 +1742,21 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         QToolTip.showText(QCursor.pos(), tooltip_text, self)
 
     def clear_receive_tab(self):
-        self.receive_payreq_e.setText('')
-        self.receive_address_e.setText('')
         self.receive_message_e.setText('')
         self.receive_amount_e.setAmount(None)
         self.expires_label.hide()
         self.expires_combo.show()
         self.request_list.clearSelection()
+        if not self.receive_type_combo.currentData():
+            self.show_unused_receive_address()
 
-    def toggle_qr_window(self):
+    def show_receive_qr_window(self):
         from . import qrwindow
         if not self.qr_window:
             self.qr_window = qrwindow.QR_Window(self)
-            self.qr_window.setVisible(True)
-            self.qr_window_geometry = self.qr_window.geometry()
-        else:
-            if not self.qr_window.isVisible():
-                self.qr_window.setVisible(True)
-                self.qr_window.setGeometry(self.qr_window_geometry)
-            else:
-                self.qr_window_geometry = self.qr_window.geometry()
-                self.qr_window.setVisible(False)
+        self.qr_window.show()
+        self.qr_window.raise_()
+        self.qr_window.activateWindow()
         self.update_receive_qr()
 
     def show_send_tab(self):
@@ -1465,7 +1766,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.receive_tab))
 
     def update_receive_qr(self):
-        uri = str(self.receive_payreq_e.text())
+        address = self.receive_address_e.text()
+        uri = self.receive_payreq_e.text() or address
+        self.copy_receive_button.setEnabled(bool(address))
+        self.enlarge_qr_button.setEnabled(bool(uri))
         self.receive_qr.setData(uri)
         if self.qr_window and self.qr_window.isVisible():
             self.qr_window.qrw.setData(uri)
@@ -1488,6 +1792,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.receive_address_e.setToolTip("")
 
     def create_send_tab(self):
+        self._send_draft_id = object()
         # A 4-column grid layout.  All the stretch is in the last column.
         # The exchange rate plugin adds a fiat widget in column 2
         self.send_grid = grid = QGridLayout()
@@ -1501,6 +1806,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         msg = _('Recipient of the funds.') + '\n\n'\
               + _('You may enter a Firo address, a label from your list of contacts (a list of completions will be proposed), or an alias (email-like address that forwards to a Firo address)')
         payto_label = HelpLabel(_('Pay to'), msg)
+        payto_label.setBuddy(self.payto_e)
+        self.payto_e.setAccessibleName(_('Pay to'))
         grid.addWidget(payto_label, 1, 0)
         grid.addWidget(self.payto_e, 1, 1, 1, -1)
 
@@ -1509,29 +1816,38 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.payto_e.set_completer(completer)
         completer.setModel(self.completions)
 
-        msg = _('Description of the transaction (not mandatory).') + '\n\n'\
-              + _('The description is not sent to the recipient of the funds. It is stored in your wallet file, and displayed in the \'History\' tab.')
-        description_label = HelpLabel(_('Description'), msg)
+        description_label = HelpLabel(_('Wallet note'), _('Stored in your wallet for your transaction history.'))
         grid.addWidget(description_label, 2, 0)
         self.message_e = SizedFreezableLineEdit(width=700)
+        description_label.setBuddy(self.message_e)
+        self.message_e.setAccessibleName(_('Wallet note'))
         grid.addWidget(self.message_e, 2, 1, 1, -1)
 
-        # PrivateSend options
-        msg = (_('Send transaction using PrivateSend anonymized coins') +
-               '\n\n' +
-               _('Amount available for current send options'))
-        send_options_label = HelpLabel(_('Send options') + ', ' +
-                                       _('Available amount'), msg)
-        send_options_label.setWordWrap(True)
-        send_options_label.setVisible(True)
-        grid.addWidget(send_options_label, 3, 0)
+        source_label = QLabel(_('Pay from'))
+        grid.addWidget(source_label, 3, 0)
 
         self.ps_cb = QCheckBox(_('PrivateSend'))
         self.ps_cb.stateChanged.connect(self.on_ps_cb)
         self.ps_cb.setVisible(False)
         # grid.addWidget(self.ps_cb, 3, 1)
 
+        self.send_from_private = False
+        self.send_source_combo = QComboBox()
+        source_label.setBuddy(self.send_source_combo)
+        self.send_source_combo.setAccessibleName(_('Pay from'))
+        self.send_source_combo.addItem(_('Spark (private)'), True)
+        self.send_source_combo.addItem(_('Transparent'), False)
+        self.send_source_combo.activated.connect(self.toggle_send_balance_mode)
+        self.send_source_fixed = QLabel(_('Transparent'))
+        grid.addWidget(self.send_source_combo, 3, 1)
+        grid.addWidget(self.send_source_fixed, 3, 1)
+        available_label = QLabel(_('Available'))
+        # Between two fields, so without the width of a label that starts a row.
+        available_label.setStyleSheet('margin-left:0; min-width:0')
+        grid.addWidget(available_label, 3, 2)
+
         self.av_amnt = BTCAmountEdit(self.get_decimal_point)
+        self.av_amnt.setAccessibleName(_('Available'))
         self.av_amnt.setEnabled(False)
         self.av_amnt.setVisible(True)
         grid.addWidget(self.av_amnt, 3, 3)
@@ -1541,6 +1857,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
               + _('Note that if you have frozen some of your addresses, the available funds will be lower than your total balance.') + '\n\n' \
               + _('Keyboard shortcut: type "!" to send all your coins.')
         amount_label = HelpLabel(_('Amount'), msg)
+        amount_label.setBuddy(self.amount_e)
+        self.amount_e.setAccessibleName(_('Amount'))
         grid.addWidget(amount_label, 4, 0)
         grid.addWidget(self.amount_e, 4, 1)
 
@@ -1556,8 +1874,14 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         grid.addWidget(self.max_button, 4, 3)
 
         self.save_button = EnterButton(_("Save"), self.do_save_invoice)
-        self.send_button = EnterButton(_("Pay") + "...", self.do_pay)
+        self.send_button = EnterButton(_("Review payment"), self.do_pay)
+        self.send_button.setObjectName('primary_action')
         self.clear_button = EnterButton(_("Clear"), self.do_clear)
+        self.send_route_label = QLabel()
+        self.send_route_label.setWordWrap(True)
+        self.send_route_label.setTextFormat(Qt.PlainText)
+        grid.addWidget(self.send_route_label, 6, 1, 1, -1)
+        self.payto_e.textChanged.connect(self.update_send_route)
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -1585,6 +1909,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.fiat_send_e.textEdited.connect(reset_max)
 
         self.set_onchain(False)
+        self.update_send_mode_balance()
 
         self.invoices_label = QLabel(_('Send queue'))
         from .invoice_list import InvoiceList
@@ -1608,7 +1933,63 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         return w
 
     def spend_max(self):
+        # The previous quote no longer applies if the new calculation fails or is cancelled.
+        self.max_button.setChecked(False)
+        self.amount_e.setAmount(None)
         if run_hook('abort_send', self):
+            return
+        if self._spark_send_error():
+            return
+        if self.send_from_private:
+            address = self._get_send_destination_address()
+            if not address:
+                return
+            password = None
+            if self.wallet.has_keystore_encryption():
+                password = self.password_dialog(
+                    _('Enter your password to send from your Spark balance'))
+                if password is None:
+                    return
+            try:
+                # The proof is built once, in the background, after Review payment.
+                send_amt, fee = self.wallet.estimateSparkSendAll(address, password)
+            except NotEnoughFunds:
+                self.show_error(_('Not enough available Spark funds'))
+                return
+            except Exception as e:
+                self.show_error(str(e))
+                return
+            self.max_button.setChecked(True)
+            self.amount_e.setAmount(send_amt)
+            QToolTip.showText(
+                self.max_button.mapToGlobal(QPoint(0, 0)),
+                _("Network fee: {}").format(self.format_amount_and_units(fee)))
+            return
+        spark_addr = self.payto_e.get_spark_address()
+        if spark_addr:
+            def make_tx(fee_est):
+                return self.wallet.prepareSparkMintTransaction(
+                    spark_address=spark_addr,
+                    amount='!',
+                    coins=self.get_coins(),
+                    fee=fee_est)
+            try:
+                try:
+                    tx = make_tx(None)
+                except (NotEnoughFunds, NoDynamicFeeEstimates):
+                    tx = make_tx(0)
+            except NotEnoughFunds:
+                self.show_error(self.get_text_not_enough_funds_mentioning_frozen())
+                return
+            except Exception as e:
+                self.show_error(str(e))
+                return
+            self.max_button.setChecked(True)
+            self.amount_e.setAmount(tx._spark_send_amount)
+            mining_fee_str = self.format_amount_and_units(tx._spark_fee)
+            QToolTip.showText(
+                self.max_button.mapToGlobal(QPoint(0, 0)),
+                _("Network fee: {} (can be adjusted on next screen)").format(mining_fee_str))
             return
         outputs = self.payto_e.get_outputs(True)
         if not outputs:
@@ -1637,11 +2018,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 # if so, still provide opportunity to set lower fees.
                 tx = make_tx(0)
         except (MultipleSpendMaxTxOutputs, DashTxError) as e:
-            self.max_button.setChecked(False)
             self.show_error(str(e))
             return
         except NotEnoughFunds as e:
-            self.max_button.setChecked(False)
             text = self.get_text_not_enough_funds_mentioning_frozen()
             self.show_error(text)
             return
@@ -1654,7 +2033,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         # show tooltip explaining max amount
         mining_fee = tx.get_fee()
         mining_fee_str = self.format_amount_and_units(mining_fee)
-        msg = _("Mining fee: {} (can be adjusted on next screen)").format(mining_fee_str)
+        msg = _("Network fee: {} (can be adjusted on next screen)").format(mining_fee_str)
         if x_fee_amount:
             twofactor_fee_str = self.format_amount_and_units(x_fee_amount)
             msg += "\n" + _("2fa fee: {} (for the next batch of transactions)").format(twofactor_fee_str)
@@ -1796,6 +2175,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         return invoice_ext
 
     def do_save_invoice(self):
+        if self.send_from_private or self.payto_e.get_spark_address() or self._spark_send_error():
+            return
         self.pending_invoice = self.read_invoice()
         self.pending_invoice_ext = self.read_invoice_ext()
         if not self.pending_invoice:
@@ -1813,7 +2194,111 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.pending_invoice = None
         self.pending_invoice_ext = None
 
+    def _get_send_destination_address(self) -> Optional[str]:
+        spark_addr = self.payto_e.get_spark_address()
+        if spark_addr:
+            return spark_addr
+        if self.payto_e.is_pr:
+            return None
+        if self.payto_e.outputs:
+            return self.payto_e.outputs[0].address if len(self.payto_e.outputs) == 1 else None
+        script = self.payto_e.get_destination_scriptpubkey()
+        if script:
+            try:
+                from electrum_firo.bitcoin import script_to_address
+                return script_to_address(script.hex())
+            except Exception:
+                pass
+        return None
+
+    def _spark_send_error(self) -> str:
+        if self.payto_e.is_pr:
+            return _('Payment requests require transparent funds. Select Transparent to continue.') if self.send_from_private else ''
+        text = self.payto_e.toPlainText().strip().lower()
+        spark_address = self.payto_e.get_spark_address()
+        if spark_address or (self.payto_e.get_errors() and text.startswith(('sm1', 'st1'))):
+            if not self.wallet.spark_enabled:
+                if self.has_hardware_keystore:
+                    return _('Firo Electrum cannot send to a Spark address with this hardware wallet. Ask the recipient for a transparent Firo address.')
+                if self.wallet.can_use_spark():
+                    from electrum_firo import libsparkmobile
+                    if not libsparkmobile.is_available():
+                        return _('This installation lacks the Spark library, so it cannot pay a Spark address.')
+                    return _('Spark is unavailable in this session. Enable Spark to pay a Spark address.')
+                return _('This wallet cannot send to a Spark address. Ask the recipient for a transparent Firo address.')
+            if not spark_address:
+                if not text.startswith('st1' if constants.net.TESTNET else 'sm1'):
+                    return _('This Spark address belongs to a different network.')
+                return _('Enter a valid Spark address for this network.')
+        if self.send_from_private:
+            if self.get_manually_selected_coins() is not None:
+                return _('Coin control has selected transparent inputs. Select Transparent or clear coin control to spend Spark funds.')
+            if len(self.payto_e.outputs) > 1:
+                return _('Sending from Spark supports one recipient at a time.')
+            address = self._get_send_destination_address()
+            if address and is_exchange_address(address):
+                return _('Exchange addresses cannot receive directly from Spark. Choose transparent funds or enter your own transparent address.')
+        return ''
+
+    def _payment_route(self, address, *, from_spark, to_spark):
+        own_spark = to_spark and not from_spark and self.wallet.is_spark_receiving_address(address)
+        return PaymentRoute(address, from_spark, to_spark, own_spark)
+
+    def update_send_route(self):
+        error = self._spark_send_error()
+        spark_address = self.payto_e.get_spark_address()
+        address = self._get_send_destination_address()
+        message = error
+        notice_style = ''
+        if address and not error:
+            route = self._payment_route(address, from_spark=self.send_from_private,
+                                        to_spark=bool(spark_address))
+            message = route.summary() + '\n' + route.disclosure()
+            if route.from_spark and not route.to_spark:
+                notice_style = 'public_payment_notice'
+        if self.send_route_label.objectName() != notice_style:
+            self.send_route_label.setObjectName(notice_style)
+            self.send_route_label.style().unpolish(self.send_route_label)
+            self.send_route_label.style().polish(self.send_route_label)
+        self.send_route_label.setText(message)
+        self.send_route_label.setVisible(bool(message))
+        self.send_button.setEnabled(not error)
+        self.save_button.setVisible(not (error or self.send_from_private or spark_address))
+
     def do_pay(self):
+        error = self._spark_send_error()
+        if error:
+            self.show_error(error)
+            return
+        if self.send_from_private:
+            if self.ps_cb.isChecked():
+                self.show_error(_('PrivateSend cannot be used with Spark spend'))
+                return
+            if self.check_send_tab_payto_line_and_show_errors():
+                return
+            address = self._get_send_destination_address()
+            if not address:
+                self.show_error(_('Invalid Address'))
+                return
+            amount = '!' if self.max_button.isChecked() else self.amount_e.get_amount()
+            if amount is None:
+                self.show_error(_('Invalid Amount'))
+                return
+            self.pay_sparksend_dialog(address, amount)
+            return
+        spark_addr = self.payto_e.get_spark_address()
+        if spark_addr:
+            if self.check_send_tab_payto_line_and_show_errors():
+                return
+            if self.ps_cb.isChecked():
+                self.show_error(_('PrivateSend cannot be used with Spark mint'))
+                return
+            amount = '!' if self.max_button.isChecked() else self.amount_e.get_amount()
+            if amount is None:
+                self.show_error(_('Invalid Amount'))
+                return
+            self.pay_mintspark_dialog(spark_addr, amount)
+            return
         self.pending_invoice = self.read_invoice()
         self.pending_invoice_ext = self.read_invoice_ext()
         if not self.pending_invoice:
@@ -1821,6 +2306,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.do_pay_invoice(self.pending_invoice, self.pending_invoice_ext)
 
     def pay_multiple_invoices(self, invoices):
+        if self.send_from_private:
+            self.show_error(_('Saved payments use transparent funds. Select Transparent to pay from the send queue.'))
+            return
         outputs = []
         invoices_ext = []
         for invoice in invoices:
@@ -1837,6 +2325,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
     def do_pay_invoice(self, invoice: 'Invoice',
                        invoice_ext: 'InvoiceExt' = None):
+        if self.send_from_private:
+            self.show_error(_('Saved payments use transparent funds. Select Transparent to pay from the send queue.'))
+            return
         if invoice.type == PR_TYPE_ONCHAIN:
             assert isinstance(invoice, OnchainInvoice)
             psman = self.wallet.psman
@@ -1893,34 +2384,22 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         if self.tabs.currentIndex() != self.tabs.indexOf(self.send_tab):
             return
         wallet = self.wallet
-        psman = wallet.psman
-        is_ps = self.ps_cb.isChecked()
-        min_rounds = None if not is_ps else psman.mix_rounds
-        no_ps_data = psman.is_hw_ks and not psman.enabled
-        tx_type, extra_payload = self.extra_payload.get_extra_data()
+        self.av_amnt.setToolTip(_('Spendable funds before the network fee.'))
+        if self.send_from_private and wallet.spark_enabled:
+            scan_status = wallet.get_spark_scan_status()
+            if scan_status == 'complete':
+                self.av_amnt.setAmount(wallet.get_spark_balance().spendable)
+            else:
+                self.av_amnt.setAmount(None)
+                self.av_amnt.setPlaceholderText(_('Retrying Spark sync') if scan_status == 'retrying' else _('Spark scan incomplete'))
+            return
+        min_rounds = wallet.psman.mix_rounds if self.ps_cb.isChecked() else None
         inputs = self.get_coins(nonlocal_only=nonlocal_only,
                                 min_rounds=min_rounds)
-        if inputs:
-            addr = self.wallet.dummy_address()
-            outputs = [PartialTxOutput.from_address_and_value(addr, value='!')]
-            try:
-                tx = wallet.make_unsigned_transaction(coins=inputs,
-                                                      outputs=outputs,
-                                                      no_ps_data=no_ps_data,
-                                                      min_rounds=min_rounds,
-                                                      tx_type=tx_type,
-                                                      extra_payload=extra_payload)
-                amount = tx.output_value()
-                extra_fee = run_hook('get_tx_extra_fee', wallet, tx)
-                if extra_fee:
-                    amount -= extra_fee[1]
-            except Exception:
-                amount = 0
-        else:
-            amount = 0
-        self.av_amnt.setAmount(amount)
+        self.av_amnt.setAmount(sum(coin.value_sats() for coin in inputs))
 
     def set_ps_cb_from_coins(self, coins):
+        self.update_send_route()
         is_ps = self.ps_cb.isChecked()
         use_regular_coins = False
         use_ps_coins = False
@@ -1953,9 +2432,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         if self.max_button.isChecked():
             self.spend_max()
 
-    def get_coins(self, *, nonlocal_only=False,
+    def get_coins(self, *, nonlocal_only=False, wallet_wide=False,
                   min_rounds=None) -> Sequence[PartialTxInput]:
-        coins = self.get_manually_selected_coins()
+        coins = None if wallet_wide else self.get_manually_selected_coins()
         if coins is not None:
             return coins
         else:
@@ -2024,12 +2503,70 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             return
 
         output_value = '!' if '!' in output_values else sum(output_values)
+        route = None
+        if len(outputs) == 1 and outputs[0].address and not (is_ps or is_sweep or tx_type):
+            route = PaymentRoute(outputs[0].address, from_spark=False, to_spark=False)
         conf_dlg = ConfirmTxDialog(window=self, make_tx=make_tx,
                                    output_value=output_value,
-                                   is_sweep=is_sweep, is_ps_tx=is_ps)
+                                   is_sweep=is_sweep, is_ps_tx=is_ps, route=route)
         conf_dlg.bg_update(
             lambda x: self._conf_dlg_after_bg_update(conf_dlg,
                                                      external_keypairs))
+
+    def pay_mintspark_dialog(self, spark_address: str, amount) -> None:
+        if run_hook('abort_send', self):
+            return
+        inputs = self.get_coins()
+
+        def make_tx(fee_est):
+            return self.wallet.prepareSparkMintTransaction(
+                coins=inputs,
+                spark_address=spark_address,
+                amount=amount,
+                fee=fee_est)
+
+        conf_dlg = ConfirmTxDialog(
+            window=self, make_tx=make_tx, output_value=amount,
+            is_sweep=False, route=self._payment_route(spark_address, from_spark=False, to_spark=True))
+        conf_dlg.submitted_draft = self.payment_draft_snapshot()
+        conf_dlg.wallet_note = self.message_e.text()
+        conf_dlg.preview_button.setVisible(False)
+        conf_dlg.bg_update(
+            lambda x: self._conf_dlg_after_bg_update(conf_dlg, None))
+
+    def pay_sparksend_dialog(self, address: str, amount) -> None:
+        if run_hook('abort_send', self):
+            return
+        password = None
+        if self.wallet.has_keystore_encryption():
+            password = self.password_dialog(
+                _('Enter your password to send from your Spark balance'))
+            if password is None:
+                return
+            try:
+                self.wallet.check_password(password)
+            except Exception as e:
+                self.show_error(str(e))
+                return
+
+        def make_tx(fee_est):
+            return self.wallet.prepareSendSpark(
+                address=address,
+                amount=amount,
+                password=password)
+
+        conf_dlg = ConfirmTxDialog(
+            window=self, make_tx=make_tx, output_value=amount,
+            is_sweep=False, route=self._payment_route(address, from_spark=True,
+                                                       to_spark=bool(self.payto_e.get_spark_address())))
+        conf_dlg.submitted_draft = self.payment_draft_snapshot()
+        conf_dlg.wallet_note = self.message_e.text()
+        conf_dlg.password_required = False
+        conf_dlg.pw_label.setVisible(False)
+        conf_dlg.pw.setVisible(False)
+        conf_dlg.preview_button.setVisible(False)
+        conf_dlg.bg_update(
+            lambda x: self._conf_dlg_after_bg_update(conf_dlg, None))
 
     def _conf_dlg_after_bg_update(self, conf_dlg, external_keypairs):
         conf_dlg.update()
@@ -2039,6 +2576,18 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self._conf_dlg_or_preview_dlg(conf_dlg, external_keypairs)
 
     def _on_conf_dlg_not_enough_funds(self, conf_dlg, external_keypairs):
+        route = conf_dlg.route
+        if route and route.from_spark:
+            text = _('Not enough available Spark funds for this payment and its fee.')
+            amount = conf_dlg.output_value
+            if isinstance(amount, int) and self.wallet.get_balance()[0] > amount:
+                text += '\n' + _('Your transparent balance can cover it: set Pay from to Transparent.')
+            self.show_message(text)
+            return
+        if route and route.to_spark:
+            # A move into Spark pays the minimum fee rate: no lower fee to offer.
+            self.show_message(self.get_text_not_enough_funds_mentioning_frozen())
+            return
 
         def enough_funds_cb(can_continue):
             # Check if we had enough funds excluding fees,
@@ -2051,8 +2600,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         conf_dlg.bg_check_have_enough_funds_assuming_zero_fees(enough_funds_cb)
 
     def _conf_dlg_or_preview_dlg(self, conf_dlg, external_keypairs):
+        route = conf_dlg.route
+        spark_route = route and (route.from_spark or route.to_spark)
         # shortcut to advanced preview (after "enough funds" check!)
-        if self.config.get('advanced_preview'):
+        if self.config.get('advanced_preview') and not spark_route:
             preview_dlg = PreviewTxDialog(
                 window=self,
                 make_tx=conf_dlg.make_tx,
@@ -2072,11 +2623,24 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 self.show_message(str(e))
                 return
         if is_send:
-            pr = self.payment_request
-            self.save_pending_invoice()
+            submitted_draft = None
+            if spark_route:
+                pr = None
+                submitted_draft = conf_dlg.submitted_draft
+            else:
+                pr = self.payment_request
+                self.save_pending_invoice()
+            sparkMints = list(getattr(tx, 'sparkMints', None) or [])
+
             def sign_done(success):
-                if success:
-                    self.broadcast_or_show(tx, pr)
+                if not success:
+                    return
+                if sparkMints:
+                    self.broadcast_spark_mints([tx] + sparkMints, password, wallet_note=conf_dlg.wallet_note,
+                                               submitted_draft=submitted_draft)
+                else:
+                    self.broadcast_or_show(tx, pr, wallet_note=conf_dlg.wallet_note, submitted_draft=submitted_draft)
+
             self.sign_tx_with_password(tx, callback=sign_done, password=password,
                                        external_keypairs=external_keypairs)
         else:
@@ -2089,7 +2653,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             preview_dlg.bg_update(lambda x: preview_dlg.update_and_show())
 
     def broadcast_or_show(self, tx: Transaction,
-                          pr: Optional[paymentrequest.PaymentRequest]):
+                          pr: Optional[paymentrequest.PaymentRequest], *, wallet_note='', submitted_draft=None):
         if not tx.is_complete():
             self.show_transaction(tx)
             return
@@ -2097,7 +2661,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.show_error(_("You can't broadcast a transaction without a live network connection."))
             self.show_transaction(tx)
             return
-        self.broadcast_transaction(tx, pr)
+        self.broadcast_transaction(tx, pr, wallet_note=wallet_note, submitted_draft=submitted_draft)
 
     @protected
     @ps_ks_protected
@@ -2186,7 +2750,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         WaitingDialog(self, msg, task, on_success, on_failure)
 
     def broadcast_transaction(self, tx: Transaction,
-                              pr: Optional[paymentrequest.PaymentRequest]):
+                              pr: Optional[paymentrequest.PaymentRequest], *, wallet_note='', submitted_draft=None):
 
         def broadcast_thread():
             # non-GUI thread
@@ -2226,11 +2790,72 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             if result:
                 success, msg = result
                 if success:
+                    if wallet_note:
+                        self.wallet.set_label(tx.txid(), wallet_note)
+                    if getattr(tx, '_spark_used_tags', None):
+                        self.wallet.confirmSendSpark(tx)
+                        self.update_send_mode_balance()
+                        self.need_update.set()
+                    self.clear_submitted_draft(submitted_draft)
                     parent.show_message(_('Payment sent.') + '\n' + msg)
                     self.invoice_list.update()
                 else:
                     msg = msg or ''
                     parent.show_error(msg)
+
+        WaitingDialog(self, _('Broadcasting transaction...'),
+                      broadcast_thread, broadcast_done, self.on_error)
+
+    def broadcast_spark_mints(self, txs: List[PartialTransaction], password, *, wallet_note='', submitted_draft=None):
+        if not self.network:
+            self.show_error(_("You can't broadcast a transaction without a live network connection."))
+            return
+
+        def broadcast_thread():
+            self.wallet.confirmSparkMintTransactions(txs[1:], password)
+            sent = []
+            for tx in txs:
+                if not tx.is_complete():
+                    return sent, _('Transaction is not fully signed'), None
+                try:
+                    coro = self.wallet.psman.broadcast_transaction(tx)
+                    self.network.run_from_another_thread(coro)
+                except TxBroadcastError as e:
+                    return sent, e.get_message_for_gui(), tx.txid()
+                except Exception as e:
+                    # A missing response cannot establish whether the server accepted this transaction.
+                    return sent, repr(e), tx.txid()
+                sent.append(tx.txid())
+            return sent, None, None
+
+        parent = self.top_level_window(lambda win: isinstance(win, MessageBoxMixin))
+
+        def broadcast_done(result):
+            sent, error, uncertain_txid = result
+            if sent or uncertain_txid:
+                self.clear_submitted_draft(submitted_draft)
+            if wallet_note:
+                for txid in sent:
+                    self.wallet.set_label(txid, wallet_note)
+            self.invoice_list.update()
+            self.need_update.set()
+            if error is None:
+                parent.show_message(_('Payment sent.') + '\n' + '\n'.join(sent))
+                return
+            submitted = sum(spark_mint_amount(tx) for tx in txs[:len(sent)])
+            remaining = txs[len(sent):]
+            msg = _('Submitted {count} of {total} transactions ({amount}).').format(
+                count=len(sent), total=len(txs), amount=self.format_amount_and_units(submitted))
+            if uncertain_txid:
+                msg += '\n' + _('Check the status of transaction {txid} ({amount}) before retrying.').format(
+                    txid=uncertain_txid, amount=self.format_amount_and_units(spark_mint_amount(remaining[0])))
+                remaining = remaining[1:]
+            if remaining:
+                msg += '\n' + _('Unsent recipient amount: {}.').format(
+                    self.format_amount_and_units(sum(spark_mint_amount(tx) for tx in remaining)))
+            if sent:
+                msg += '\n' + '\n'.join(sent)
+            parent.show_error(msg + '\n\n' + error)
 
         WaitingDialog(self, _('Broadcasting transaction...'),
                       broadcast_thread, broadcast_done, self.on_error)
@@ -2300,26 +2925,45 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.payment_request = None
         self.do_clear()
 
-    def on_pr(self, request: 'paymentrequest.PaymentRequest'):
+    def on_pr(self, uri, request: 'paymentrequest.PaymentRequest', verified: bool):
+        if self.payto_URI is not uri:
+            return
         self.set_onchain(True)
         self.payment_request = request
-        if self.payment_request.verify(self.contacts):
-            self.payment_request_ok_signal.emit()
+        if verified:
+            self.payment_request_ok()
         else:
-            self.payment_request_error_signal.emit()
+            self.payment_request_error()
 
     def set_onchain(self, b):
         self._is_onchain = b
         self.max_button.setEnabled(b)
 
+    def has_payment_draft(self):
+        return bool(self.payto_e.toPlainText() or self.amount_e.text() or
+                    self.message_e.text() or self.payto_URI or self.payment_request)
+
+    def payment_draft_snapshot(self):
+        return (self._send_draft_id, self.payto_e.toPlainText(), self.amount_e.text(), self.message_e.text(),
+                self.max_button.isChecked(), self.send_from_private, self.payto_URI, self.payment_request)
+
+    def clear_submitted_draft(self, submitted_draft):
+        if submitted_draft is not None and self.payment_draft_snapshot() == submitted_draft:
+            self.pending_invoice = self.pending_invoice_ext = None
+            self.do_clear()
+
     def pay_to_URI(self, URI):
         if not URI:
             return
         try:
-            out = util.parse_URI(URI, self.on_pr)
+            out = util.parse_URI(URI)
         except InvalidBitcoinURI as e:
             self.show_error(_("Error parsing URI") + f":\n{e}")
             return
+        if self.has_payment_draft() and not self.question(_('Replace the current payment draft with this payment request?')):
+            return
+        self.do_clear()
+        self.pending_invoice = self.pending_invoice_ext = None
         self.show_send_tab()
         self.payto_URI = out
         r = out.get('r')
@@ -2327,6 +2971,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         name = out.get('name')
         if r or (name and sig):
             self.prepare_for_payment_request()
+            def receive_request(request):
+                self.payment_request_received.emit(out, request, request.verify(self.contacts))
+            util.parse_URI(URI, receive_request)
             return
         address = out.get('address')
         amount = out.get('amount')
@@ -2339,12 +2986,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.payto_e.setText(address)
         if message:
             self.message_e.setText(message)
-        if amount:
+        if amount is not None:
             self.amount_e.setAmount(amount)
             self.amount_e.textEdited.emit("")
 
 
     def do_clear(self):
+        self._send_draft_id = object()
         self.max_button.setChecked(False)
         self.payment_request = None
         self.payto_URI = None
@@ -2363,11 +3011,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.wallet.set_frozen_state_of_addresses(addrs, freeze)
         self.address_list.update()
         self.utxo_list.update()
+        self.update_balances()
 
     def set_frozen_state_of_coins(self, utxos: Sequence[PartialTxInput], freeze: bool):
         utxos_str = {utxo.prevout.to_str() for utxo in utxos}
         self.wallet.set_frozen_state_of_coins(utxos_str, freeze)
         self.utxo_list.update()
+        self.update_balances()
 
     def create_list_tab(self, l, toolbar=None):
         w = QWidget()
@@ -2434,6 +3084,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.show_message(msg, title=_('Pay to many'))
 
     def payto_contacts(self, labels):
+        if len(labels) > 1 and any(util.is_spark_address(key) for key in labels):
+            self.show_error(_('Payments to Spark addresses support one recipient at a time.'))
+            return
         paytos = [self.get_contact_payto(label) for label in labels]
         self.show_send_tab()
         if len(paytos) == 1:
@@ -2445,7 +3098,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.payto_e.setFocus()
 
     def set_contact(self, label, address):
-        if not is_address(address):
+        address = address.strip()
+        if not util.is_payment_address(address):
             self.show_error(_('Invalid Address'))
             self.contact_list.update()  # Displays original unchanged value
             return False
@@ -2573,7 +3227,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         sb = QStatusBar()
         sb.setFixedHeight(35)
 
-        self.balance_label = QLabel("Loading wallet...")
+        self.balance_label = QLabel(_("Loading wallet..."))
         self.balance_label.setObjectName("main_window_balance")
         self.balance_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.balance_label.setStyleSheet("""QLabel { padding: 0 }""")
@@ -3294,7 +3948,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         export_meta_gui(self, _('requests'), self.wallet.export_requests)
 
     def import_contacts(self):
-        import_meta_gui(self, _('contacts'), self.contacts.import_file, self.contact_list.update)
+        def refresh():
+            self.contact_list.update()
+            self.update_completions()
+        import_meta_gui(self, _('contacts'), self.contacts.import_file, refresh)
 
     def export_contacts(self):
         export_meta_gui(self, _('contacts'), self.contacts.export_file)
@@ -3422,6 +4079,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.address_list.refresh_headers()
         self.address_list.update()
         self.update_status()
+        self.update_balances()
 
     def settings_dialog(self, go_tab=None):
         from .settings_dialog import SettingsDialog
@@ -3429,6 +4087,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.alias_received_signal.connect(d.set_alias_color)
         d.exec_()
         self.alias_received_signal.disconnect(d.set_alias_color)
+        self.update_balances()
+        self.update_available_amount()
         if self.fx:
             self.fx.trigger_update()
         run_hook('close_settings_dialog')
@@ -3473,6 +4133,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         if self._cleaned_up:
             return
         self._cleaned_up = True
+        self.wallet.disable_spark()
         self.stop_get_data_threads()
         hide_ps_dialog(self)
         self.dip3_tab.cleanup()

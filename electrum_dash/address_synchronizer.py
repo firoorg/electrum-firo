@@ -22,6 +22,7 @@
 # SOFTWARE.
 
 import asyncio
+import base64
 import threading
 import asyncio
 import itertools
@@ -34,11 +35,13 @@ from . import bitcoin, util
 from .bitcoin import COINBASE_MATURITY
 from .dash_ps import PSManager
 from .dash_ps_util import PSCoinRounds, PS_MIXING_TX_TYPES
-from .dash_tx import tx_header_to_tx_type
+from .dash_tx import PSTxTypes, classify_onchain_tx_type
 from .util import profiler, bfh, TxMinedInfo, UnrelatedTransactionException, with_lock
 from .protx import ProTxManager
 from .transaction import Transaction, TxOutput, TxInput, PartialTxInput, TxOutpoint, PartialTransaction
 from .synchronizer import Synchronizer
+from .spark_interface import (FiroCacheCoordinator, SparkSynchronizer,
+                              get_spark_shared_cache)
 from .verifier import SPV
 from .blockchain import hash_header, Blockchain
 from .i18n import _
@@ -66,6 +69,12 @@ class HistoryItem(NamedTuple):
     group_data: Optional[list]
 
 
+class SparkBalance(NamedTuple):
+    total: int
+    spendable: int
+    pending_spendable: int
+
+
 class TxWalletDelta(NamedTuple):
     is_relevant: bool  # "related to wallet?"
     is_any_input_ismine: bool
@@ -90,6 +99,7 @@ class AddressSynchronizer(Logger):
         # verifier (SPV) and synchronizer are started in start_network
         self.synchronizer = None
         self.verifier = None
+        self.spark_synchronizer = None
         # locks: if you need to take multiple ones, acquire them in the order they are defined here!
         self.lock = threading.RLock()
         self.transaction_lock = threading.RLock()
@@ -201,6 +211,7 @@ class AddressSynchronizer(Logger):
         if self.network is not None:
             self.synchronizer = Synchronizer(self)
             self.verifier = SPV(self.network, self)
+            self.spark_synchronizer = SparkSynchronizer(self.network, self)
             util.register_callback(self.on_blockchain_updated, ['blockchain_updated'])
             self.protx_manager.on_network_start(self.network)
             self.psman.on_network_start(self.network)
@@ -245,9 +256,12 @@ class AddressSynchronizer(Logger):
                         await group.spawn(self.synchronizer.stop())
                     if self.verifier:
                         await group.spawn(self.verifier.stop())
+                    if self.spark_synchronizer:
+                        await group.spawn(self.spark_synchronizer.stop())
             finally:  # even if we get cancelled
                 self.synchronizer = None
                 self.verifier = None
+                self.spark_synchronizer = None
                 util.unregister_callback(self.on_blockchain_updated)
                 self.psman.on_stop_threads()
                 util.unregister_callback(self.on_dash_islock)
@@ -538,11 +552,14 @@ class AddressSynchronizer(Logger):
 
     @profiler
     def populate_tx_deltas_cache(self):
-        for addr in self.get_addresses() + self.psman.get_addresses():
-            h = self.get_address_history(addr)
-            for tx_hash, height, islock in h:
-                delta = self.get_tx_delta(tx_hash, addr)
-                self._tx_deltas_cache[tx_hash] += delta
+        self._tx_deltas_cache = self._get_address_deltas(self.get_addresses() + self.psman.get_addresses())
+
+    def _get_address_deltas(self, addresses):
+        deltas = defaultdict(int)
+        for addr in set(addresses):
+            for tx_hash, _, _ in self.get_address_history(addr):
+                deltas[tx_hash] += self.get_tx_delta(tx_hash, addr)
+        return deltas
 
     def update_tx_deltas_cache_on_tx(self, txid, tx, *, is_added):
         self._tx_deltas_cache.pop(txid, None)
@@ -655,16 +672,15 @@ class AddressSynchronizer(Logger):
     @with_local_height_cached
     @profiler
     def get_history(self, *, domain=None, config=None, group_ps=False) -> Sequence[HistoryItem]:
-        # get domain
+        # The cache contains wallet-wide net values, including transfers between
+        # two owned addresses. A scoped history needs each address's own delta.
         if domain is None:
-            domain = self.get_addresses()
-            domain += self.psman.get_addresses()
-        domain = set(domain)
-        # 1. Get the history of each address in the domain, maintain the
-        #    delta of a tx as the sum of its deltas on domain addresses
-        if not self._tx_deltas_cache:
-            self.populate_tx_deltas_cache()
-        tx_deltas = self._tx_deltas_cache
+            if not self._tx_deltas_cache:
+                self.populate_tx_deltas_cache()
+            tx_deltas = self._tx_deltas_cache
+        else:
+            domain = set(domain)
+            tx_deltas = self._get_address_deltas(domain)
         # 2. create sorted history
         history = []
         for tx_hash in tx_deltas:
@@ -703,8 +719,7 @@ class AddressSynchronizer(Logger):
             if show_dip2:
                 tx = self.db.get_transaction(tx_hash)
                 if tx:
-                    raw_bytes = bfh(tx.serialize())
-                    tx_type = tx_header_to_tx_type(raw_bytes[:4])
+                    tx_type = classify_onchain_tx_type(tx)
             if (group_ps or show_dip2) and not tx_type:  # prefer ProTx type
                 tx_type, completed = self.db.get_ps_tx(tx_hash)
 
@@ -1216,6 +1231,97 @@ class AddressSynchronizer(Logger):
             uu += u
             xx += x
         return cc, uu, xx
+
+    def get_spark_scan_status(self) -> str:
+        if self.spark_synchronizer and self.spark_synchronizer.retrying:
+            return 'retrying'
+        state = self.db.get('spark_scan_state') or {}
+        if state.get('scan_complete') is True:
+            return 'complete'
+        # Older wallets recorded a height after every batch, including partial
+        # scans. Only a successful final batch establishes a complete balance.
+        return 'partial' if 'chain_height' in state else 'waiting'
+
+    def get_spark_balance(self) -> SparkBalance:
+        if not self.spark_enabled:
+            return SparkBalance(0, 0, 0)
+        coins = [c for c in self.db.get('spark_coins', {}).values()
+                 if not c.get('is_used')]
+        total = sum(int(c['value']) for c in coins)
+        spendable = sum(int(c['value']) for c in coins
+                        if self.get_spark_coin_height(c))
+        return SparkBalance(total, spendable, total - spendable)
+
+    def get_spark_coin_height(self, coin) -> Optional[int]:
+        if not coin.get('tx_checked'):
+            return None
+        info = self.db.get_verified_tx(coin.get('txid'))
+        if not info or info.height <= 0:
+            return None
+        if self.get_local_height() - info.height + 1 < 1:
+            return None
+        return info.height
+
+    def get_spark_spendable_coins(self) -> list:
+        if not self.spark_enabled:
+            return []
+        out = []
+        for coin in self.db.get('spark_coins', {}).values():
+            if coin.get('is_used'):
+                continue
+            if int(coin.get('value') or 0) <= 0:
+                continue
+            height = self.get_spark_coin_height(coin)
+            if not height:
+                continue
+            out.append(dict(coin, height=height))
+        return out
+
+    def get_spark_cover_sets(self) -> list:
+        """The cached anonymity set of each group that holds a spendable coin."""
+        own_heights = {}
+        for coin in self.get_spark_spendable_coins():
+            gid = int(coin['group_id'])
+            own_heights[gid] = max(own_heights.get(gid, 0), int(coin['height']))
+        # One copy of the cached sets serves every group.
+        anon_sets = get_spark_shared_cache(self.config).snapshot_anon_sets()
+        result = []
+        for groupId in sorted(own_heights):
+            info = FiroCacheCoordinator.getLatestSetInfoForGroupId(anon_sets, groupId)
+            resultSet = FiroCacheCoordinator.getSetCoinsForGroupId(anon_sets, groupId)
+            if not resultSet:
+                continue
+            if info is None:
+                raise RuntimeError(
+                    'The `info` should never be null here')
+            self._check_cover_set_anchor(groupId, info, own_heights[groupId])
+            result.append({
+                'set_id': groupId,
+                'set_hash': info['setHash'],
+                'block_hash': info['blockHash'],
+                'coins': [row[0] for row in resultSet],
+            })
+        return result
+
+    def _check_cover_set_anchor(self, groupId: int, info: dict,
+                                min_height: int) -> None:
+        height = info.get('blockHeight')
+        not_ready = _('Spark anonymity set is not verified yet, '
+                      'please wait for synchronization.')
+        if not isinstance(height, int) or height <= 0:
+            raise RuntimeError(not_ready)
+        header = (self.network.blockchain().read_header(height)
+                  if self.network else None)
+        try:
+            expected = base64.b64decode(info['blockHash'])[::-1].hex()
+        except Exception:
+            raise RuntimeError(not_ready)
+        if not header or hash_header(header) != expected:
+            raise RuntimeError(not_ready)
+        if height < min_height:
+            raise RuntimeError(_(
+                'Spark anonymity set for group {} is older than your coins '
+                'in it, please wait for synchronization.').format(groupId))
 
     def is_used(self, address: str) -> bool:
         return self.get_address_history_len(address) != 0

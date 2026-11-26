@@ -510,6 +510,11 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
             options.append('slip39')
         title = _('Enter Seed')
         message = _('Please enter your seed phrase in order to restore your wallet.')
+        if 'bip39' in options:
+            message += '\n\n' + _(
+                'If your seed comes from Campfire, Firo Qt, Stack Wallet or '
+                'another Firo wallet, click "Options" and turn on "BIP39 seed". '
+                'Spark is only available for wallets restored from a BIP39 seed.')
         return self.seed_input(title, message, test, options)
 
     @wizard_dialog

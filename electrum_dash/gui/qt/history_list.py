@@ -385,6 +385,8 @@ class HistoryModel(QAbstractItemModel, Logger):
         elif col == HistoryColumns.DESCRIPTION:
             if is_parent and not expanded:
                 return QVariant(tx_item['group_label'])
+            elif role == Qt.DisplayRole and tx_item.get('spark_activity'):
+                return QVariant(' · '.join(filter(None, (tx_item['spark_activity'], tx_item['label']))))
             else:
                 return QVariant(tx_item['label'])
         elif col == HistoryColumns.AMOUNT:
@@ -428,9 +430,8 @@ class HistoryModel(QAbstractItemModel, Logger):
         self.parent.utxo_list.update()
 
     def get_domain(self):
-        '''Overridden in address_dialog.py'''
-        return (self.parent.wallet.get_addresses() +
-                self.parent.wallet.psman.get_addresses())
+        '''The main history covers both pools. AddressHistoryModel narrows it.'''
+        return None
 
     @profiler
     def process_history(self, r, group_ps):
@@ -833,6 +834,10 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         vbox = QVBoxLayout()
         msg = messages.to_rtf(messages.MSG_CAPITAL_GAINS)
         vbox.addWidget(WWLabel(msg))
+        if self.wallet.spark_enabled:
+            vbox.addWidget(WWLabel(_(
+                'Acquisition price and unrealized gains cover transparent coins. '
+                'If a Spark spend has an unknown acquisition price, realized gains for the period are unavailable.')))
         grid = QGridLayout()
         grid.addWidget(QLabel(_("Begin")), 0, 1)
         grid.addWidget(QLabel(_("End")), 0, 2)
@@ -959,6 +964,18 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
     def show_transaction(self, tx_hash):
         tx = self.wallet.db.get_transaction(tx_hash)
         if not tx:
+            item = self.hm.transactions.get(tx_hash)
+            if item and item.get('spark_activity') and item['incoming']:
+                details = [
+                    _('Amount received: {}').format(self.parent.format_amount_and_units(item['bc_value'].value)),
+                    _('Confirmations: {}').format(item['confirmations']),
+                ]
+                if item.get('timestamp'):
+                    details.append(_('Date: {}').format(format_time(item['timestamp'])))
+                if item.get('label'):
+                    details.append(_('Wallet note: {}').format(item['label']))
+                details.append(_('Transaction ID: {}').format(tx_hash))
+                self.parent.show_message('\n'.join(details), title=_('Spark receipt'))
             return
         label = self.wallet.get_label_for_txid(tx_hash) or None # prefer 'None' if not defined (force tx dialog to hide Description field if missing)
         self.parent.show_transaction(tx, tx_desc=label)
@@ -997,6 +1014,11 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
             expanded = False
         tx = self.wallet.db.get_transaction(tx_hash)
         if not tx:
+            if tx_item.get('spark_activity') and tx_item['incoming']:
+                menu = QMenu()
+                menu.addAction(_('View Spark receipt'), lambda: self.show_transaction(tx_hash))
+                menu.addAction(_('Copy transaction ID'), lambda: self.place_text_on_clipboard(tx_hash, title=_('Transaction ID')))
+                menu.exec_(self.viewport().mapToGlobal(position))
             return
         tx_URL = block_explorer_URL(self.config, 'tx', tx_hash)
         tx_details = self.wallet.get_tx_info(tx)

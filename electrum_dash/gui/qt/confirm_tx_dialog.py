@@ -24,9 +24,10 @@
 # SOFTWARE.
 
 from decimal import Decimal
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, NamedTuple, Optional, Union
 
-from PyQt5.QtWidgets import  QVBoxLayout, QLabel, QGridLayout, QPushButton, QLineEdit
+from PyQt5.QtGui import QTextOption
+from PyQt5.QtWidgets import QVBoxLayout, QLabel, QGridLayout, QPushButton, QLineEdit, QPlainTextEdit
 
 from electrum_firo.i18n import _
 from electrum_firo.util import NotEnoughFunds, NoDynamicFeeEstimates
@@ -130,28 +131,74 @@ class TxEditor:
 
 
 
+class PaymentRoute(NamedTuple):
+    address: str
+    from_spark: bool
+    to_spark: bool
+    own_spark: bool = False
+
+    def summary(self):
+        source = _('Spark') if self.from_spark else _('Transparent')
+        destination = _('Spark') if self.to_spark else _('Transparent')
+        if self.own_spark:
+            destination = _('Your Spark balance')
+        return _('{source} → {destination}').format(source=source, destination=destination)
+
+    def disclosure(self):
+        if self.from_spark and self.to_spark:
+            return _('Spark hides the sender, recipient and payment amount on the blockchain.')
+        if self.to_spark:
+            return _('The transparent inputs and amount entering Spark are public. The receiving Spark address stays private.')
+        if self.from_spark:
+            return _('The recipient address and payment amount will be public. Your Spark address stays private.')
+        return _('The funding inputs, recipient address and payment amount will be public.')
+
+    def action(self):
+        if self.own_spark:
+            return _('Move to Spark')
+        if self.from_spark and self.to_spark:
+            return _('Send privately')
+        return _('Send to Spark address') if self.to_spark else _('Send to transparent address')
+
+
 class ConfirmTxDialog(TxEditor, WindowModalDialog):
     # set fee and return password (after pw check)
 
     def __init__(self, *, window: 'ElectrumWindow', make_tx, output_value: Union[int, str], is_sweep: bool,
-        is_ps_tx=False):
+        is_ps_tx=False, route: Optional[PaymentRoute] = None):
 
         TxEditor.__init__(self, window=window, make_tx=make_tx, output_value=output_value,
                           is_sweep=is_sweep, is_ps_tx=is_ps_tx)
-        WindowModalDialog.__init__(self, window, _("Confirm Transaction"))
+        self.route = route
+        self.wallet_note = ''
+        WindowModalDialog.__init__(self, window, _("Review payment") if route else _("Confirm Transaction"))
         vbox = QVBoxLayout()
         self.setLayout(vbox)
+        if route:
+            # A Spark address has 144 characters. Keep it visible at the user's font size.
+            self.setMinimumWidth(48 * self.fontMetrics().averageCharWidth() + 72)
+            vbox.addWidget(QLabel(route.summary()))
+            recipient = QPlainTextEdit(route.address)
+            recipient.setAccessibleName(_('Recipient address'))
+            recipient.setReadOnly(True)
+            recipient.setWordWrapMode(QTextOption.WrapAnywhere)
+            lines = 5 if route.to_spark else 2
+            recipient.setFixedHeight(lines * recipient.fontMetrics().lineSpacing() + 12)
+            recipient.setTabChangesFocus(True)
+            vbox.addWidget(QLabel(_('Your Spark address') if route.own_spark else _('Recipient address')))
+            vbox.addWidget(recipient)
         grid = QGridLayout()
         vbox.addLayout(grid)
         self.amount_label = QLabel('')
-        grid.addWidget(QLabel(_("Amount to be sent") + ": "), 0, 0)
+        amount_title = _('Recipient receives') if route else _('Amount to be sent')
+        if route and route.own_spark:
+            amount_title = _('Move to Spark')
+        grid.addWidget(QLabel(amount_title), 0, 0)
         grid.addWidget(self.amount_label, 0, 1)
 
-        msg = _('Dash transactions are in general not free. A transaction fee is paid by the sender of the funds.') + '\n\n'\
-              + _('The amount of fee can be decided freely by the sender. However, transactions with low fees take more time to be processed.') + '\n\n'\
-              + _('A suggested fee is automatically added to this field. You may override it. The suggested fee increases with the size of the transaction.')
+        msg = _('The network fee is paid by the sender.')
         self.fee_label = QLabel('')
-        grid.addWidget(HelpLabel(_("Mining fee") + ": ", msg), 1, 0)
+        grid.addWidget(HelpLabel(_("Network fee"), msg), 1, 0)
         grid.addWidget(self.fee_label, 1, 1)
 
         self.extra_fee_label = QLabel(_("Additional fees") + ": ")
@@ -163,9 +210,23 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
 
         self.fee_slider = FeeSlider(self, self.config, self.fee_slider_callback)
         self.fee_combo = FeeComboBox(self.fee_slider)
-        grid.addWidget(HelpLabel(_("Fee rate") + ": ", self.fee_combo.help_msg), 5, 0)
-        grid.addWidget(self.fee_slider, 5, 1)
-        grid.addWidget(self.fee_combo, 5, 2)
+        self.fee_combo.setMinimumHeight(self.fee_combo.fontMetrics().height() + 12)
+        if not (route and route.from_spark):
+            grid.addWidget(HelpLabel(_("Fee rate") + ": ", self.fee_combo.help_msg), 5, 0)
+            grid.addWidget(self.fee_slider, 5, 1)
+            grid.addWidget(self.fee_combo, 5, 2)
+        if route:
+            self.total_label = QLabel()
+            grid.addWidget(QLabel(_('Total from Spark') if route.from_spark else _('Total from Transparent')), 3, 0)
+            grid.addWidget(self.total_label, 3, 1)
+            self.batch_label = QLabel()
+            self.batch_label.hide()
+            grid.addWidget(self.batch_label, 4, 0, 1, -1)
+            disclosure = QLabel(route.disclosure())
+            if route.from_spark and not route.to_spark:
+                disclosure.setObjectName('public_payment_notice')
+            disclosure.setWordWrap(True)
+            vbox.addWidget(disclosure)
 
         self.message_label = QLabel(self.default_message())
         grid.addWidget(self.message_label, 6, 0, 1, -1)
@@ -176,7 +237,8 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
         self.preview_button = QPushButton(_('Advanced'))
         self.preview_button.clicked.connect(self.on_preview)
         grid.addWidget(self.preview_button, 0, 2)
-        self.send_button = QPushButton(_('Send'))
+        self.send_button = QPushButton(route.action() if route else _('Send'))
+        self.send_button.setObjectName('primary_action')
         self.send_button.clicked.connect(self.on_send)
         self.send_button.setDefault(True)
         vbox.addLayout(Buttons(CancelButton(self), self.send_button))
@@ -188,7 +250,7 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
                       on_success, parent.on_error)
 
     def default_message(self):
-        return _('Enter your password to proceed') if self.password_required else _('Click Send to proceed')
+        return _('Enter your password to proceed') if self.password_required else ''
 
     def on_preview(self):
         self.accept()
@@ -226,25 +288,20 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
         self.pw.setEnabled(enable)
         self.send_button.setEnabled(enable)
 
-    def _update_amount_label(self):
-        tx = self.tx
-        if self.output_value == '!':
-            if tx:
-                amount = tx.output_value()
-                amount_str = self.main_window.format_amount_and_units(amount)
-            else:
-                amount_str = "max"
-        else:
-            amount = self.output_value
-            amount_str = self.main_window.format_amount_and_units(amount)
-        self.amount_label.setText(amount_str)
-
     def update(self):
         tx = self.tx
-        self._update_amount_label()
+        amount = getattr(tx, '_spark_send_amount', self.output_value)
+        if tx and amount == '!':
+            if self.route:
+                amount = sum(o.value for o in tx.outputs() if o.address == self.route.address)
+            else:
+                amount = tx.output_value()
+        self.amount_label.setText(_('Max') if amount == '!' else self.main_window.format_amount_and_units(amount))
 
         if self.not_enough_funds:
-            text = self.main_window.get_text_not_enough_funds_mentioning_frozen()
+            text = (_('Not enough available Spark funds for this payment and its fee.')
+                    if self.route and self.route.from_spark
+                    else self.main_window.get_text_not_enough_funds_mentioning_frozen())
             self.toggle_send_button(False, message=text)
             return
 
@@ -260,18 +317,23 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
         self.pw_label.setVisible(self.password_required)
         self.pw.setVisible(self.password_required)
 
-        fee = tx.get_fee()
+        fee = getattr(tx, '_spark_fee', None)
+        if fee is None:
+            fee = tx.get_fee()
         assert fee is not None
         self.fee_label.setText(self.main_window.format_amount_and_units(fee))
-        x_fee = run_hook('get_tx_extra_fee', self.wallet, tx)
-        if x_fee:
-            x_fee_address, x_fee_amount = x_fee
-            self.extra_fee_label.setVisible(True)
-            self.extra_fee_value.setVisible(True)
-            self.extra_fee_value.setText(self.main_window.format_amount_and_units(x_fee_amount))
-
-        amount = tx.output_value() if self.output_value == '!' else self.output_value
-        tx_size = tx.estimated_size()
+        batch = [tx] + list(getattr(tx, 'sparkMints', []))
+        extras = (run_hook('get_tx_extra_fee', self.wallet, part) for part in batch)
+        extra_fees = sum(extra[1] for extra in extras if extra)
+        self.extra_fee_label.setVisible(bool(extra_fees))
+        self.extra_fee_value.setVisible(bool(extra_fees))
+        self.extra_fee_value.setText(self.main_window.format_amount_and_units(extra_fees))
+        tx_size = sum(part.estimated_size() for part in batch)
+        if self.route:
+            total = amount + fee + extra_fees
+            self.total_label.setText(self.main_window.format_amount_and_units(total))
+            self.batch_label.setText(_('This payment uses {} transactions.').format(len(batch)))
+            self.batch_label.setVisible(len(batch) > 1)
         fee_warning_tuple = self.wallet.get_tx_fee_warning(
             invoice_amt=amount, tx_size=tx_size, fee=fee)
         if fee_warning_tuple:

@@ -13,6 +13,7 @@ RUN dpkg --add-architecture i386 \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         wget git binutils-mingw-w64 gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 \
+        g++-mingw-w64-i686 g++-mingw-w64-x86-64 \
         win-iconv-mingw-w64-dev \
         build-essential libtool autoconf automake \
         gnupg2 \
@@ -32,6 +33,15 @@ RUN dpkg --add-architecture i386 \
     && wget https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks \
     && chmod +x winetricks && mv winetricks /usr/local/bin \
     && rm -rf /var/lib/apt/lists/*
+
+ENV CMAKE_VERSION=3.27.9 \
+    CMAKE_SHA256=72b01478eeb312bf1a0136208957784fe55a7b587f8d9f9142a7fc9b0b9e9a28
+
+RUN wget -q https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz \
+    && echo "${CMAKE_SHA256}  cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" | sha256sum -c - \
+    && tar -xzf cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz -C /usr/local \
+    && rm cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz
+ENV PATH="/usr/local/cmake-${CMAKE_VERSION}-linux-x86_64/bin:${PATH}"
 
 ENV WINEPATH c:/git/cmd;c:/Python38;c:/Python38/Scripts
 ENV WINEDEBUG -all

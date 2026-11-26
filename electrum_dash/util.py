@@ -866,6 +866,23 @@ PAY_BIP21_URI_SCHEME = 'pay'
 class InvalidBitcoinURI(Exception): pass
 
 
+def has_spark_address_prefix(address: str) -> bool:
+    return isinstance(address, str) and address.lower().startswith(('sm1', 'st1'))
+
+
+def is_spark_address(address: str) -> bool:
+    if not has_spark_address_prefix(address) or not address.isascii() or not address.isalnum():
+        return False
+    from . import constants, libsparkmobile
+    return (libsparkmobile.is_available()
+            and libsparkmobile.is_valid_spark_address(address, is_testnet=constants.net.TESTNET))
+
+
+def is_payment_address(address: str) -> bool:
+    from . import bitcoin
+    return bitcoin.is_address(address) or is_spark_address(address)
+
+
 # TODO rename to parse_bip21_uri or similar
 def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
     """Raises InvalidBitcoinURI on malformed URI."""
@@ -876,13 +893,12 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
         raise InvalidBitcoinURI(f"expected string, not {repr(uri)}")
 
     if ':' not in uri:
-        if not bitcoin.is_address(uri):
+        if not is_payment_address(uri):
             raise InvalidBitcoinURI("Not a Firo address")
         return {'address': uri}
 
     u = urllib.parse.urlparse(uri)
-    if u.scheme not in [FIRO_BIP21_URI_SCHEME]:
-        print(uri)
+    if u.scheme not in (FIRO_BIP21_URI_SCHEME, PAY_BIP21_URI_SCHEME):
         raise InvalidBitcoinURI("Not a Firo URI")
     address = u.path
 
@@ -901,10 +917,10 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
     if u.scheme == 'pay':
         out_keys = list(out.keys())
         len_out_keys = len(out_keys)
-        if address or len_out_keys != 1 or out_keys[0] != 'r':
+        if address or u.netloc or len_out_keys != 1 or out_keys[0] != 'r':
             raise InvalidBitcoinURI(f'pay: scheme allowed only with "r" query')
     if address:
-        if not bitcoin.is_address(address):
+        if not is_payment_address(address):
             raise InvalidBitcoinURI(f"Invalid Firo address: {address}")
         out['address'] = address
     if 'amount' in out:
@@ -943,27 +959,40 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
     r = out.get('r')
     sig = out.get('sig')
     name = out.get('name')
+    if r or (name and sig):
+        if has_spark_address_prefix(address):
+            raise InvalidBitcoinURI(_('Spark addresses cannot be used with BIP70 payment requests.'))
+        if name and sig and not address:
+            raise InvalidBitcoinURI(_('Signed payment links require a transparent address.'))
     if on_pr and (r or (name and sig)):
-        @log_exceptions
+        from . import paymentrequest as pr
+
         async def get_payment_request():
-            from . import paymentrequest as pr
-            if name and sig:
-                s = pr.serialize_request(out).SerializeToString()
-                request = pr.PaymentRequest(s)
-            else:
-                request = await pr.get_payment_request(r)
-            if on_pr:
-                on_pr(request)
-        loop = loop or asyncio.get_event_loop()
-        asyncio.run_coroutine_threadsafe(get_payment_request(), loop)
+            try:
+                if name and sig:
+                    request = pr.PaymentRequest(pr.serialize_request(out).SerializeToString())
+                else:
+                    request = await pr.get_payment_request(r)
+            except Exception as e:
+                request = pr.PaymentRequest(None, error=_('Cannot read payment request: {}').format(e))
+            on_pr(request)
+
+        task = get_payment_request()
+        try:
+            loop = loop or asyncio.get_event_loop()
+            if not loop.is_running():
+                raise RuntimeError(_('The payment request service is unavailable.'))
+            asyncio.run_coroutine_threadsafe(task, loop)
+        except RuntimeError as e:
+            task.close()
+            on_pr(pr.PaymentRequest(None, error=str(e)))
 
     return out
 
 
 def create_bip21_uri(addr, amount_sat: Optional[int], message: Optional[str],
                      *, extra_query_params: Optional[dict] = None) -> str:
-    from . import bitcoin
-    if not bitcoin.is_address(addr):
+    if not is_payment_address(addr):
         return ""
     if extra_query_params is None:
         extra_query_params = {}

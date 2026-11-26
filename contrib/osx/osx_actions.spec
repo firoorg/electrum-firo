@@ -78,6 +78,7 @@ binaries = []
 binaries += [('libusb-1.0.dylib', '.')]
 binaries += [('libsecp256k1.0.dylib', '.')]
 binaries += [('libzbar.0.dylib', '.')]
+binaries += [('electrum_dash/libelectrum_libsparkmobile.dylib', '.')]
 
 # Workaround for "Retro Look":
 binaries += [b for b in collect_dynamic_libs('PyQt5') if 'macstyle' in b[0]]

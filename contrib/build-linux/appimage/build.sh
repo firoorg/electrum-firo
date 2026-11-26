@@ -89,6 +89,20 @@ info "installing electrum and its dependencies."
 "$python" -m pip uninstall -y Cython
 
 
+info "building libsparkmobile."
+LDFLAGS="-static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL" \
+    CC=gcc-9 CXX=g++-9 "$PROJECT_ROOT/contrib/make_libsparkmobile.sh"
+SPARK_SO="$PROJECT_ROOT/electrum_dash/libelectrum_libsparkmobile.so"
+if readelf -d "$SPARK_SO" | grep -E "NEEDED.*(libstdc\+\+|libgcc_s)"; then
+    fail "libsparkmobile still links the shared C++/gcc runtime"
+fi
+if objdump -T "$SPARK_SO" | grep -E "GLIBCXX_3\.4\.(2[2-9]|[3-9][0-9])|CXXABI_1\.3\.(1[0-9])"; then
+    fail "libsparkmobile requires a libstdc++ newer than the oldest supported host"
+fi
+cp "$SPARK_SO" "$APPDIR/usr/lib/libelectrum_libsparkmobile.so"
+rm -rf "$PROJECT_ROOT/electrum_libsparkmobile"
+
+
 info "copying zbar"
 cp "/usr/lib/x86_64-linux-gnu/libzbar.so.0" "$APPDIR/usr/lib/libzbar.so.0"
 
