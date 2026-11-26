@@ -245,8 +245,18 @@ class NotificationSession(RPCSession):
         # overridden so that max_size can be customized
         max_size = int(self.interface.network.config.get('network_max_incoming_msg_size',
                                                          MAX_INCOMING_MSG_SIZE))
-        max_size = max(max_size, SPARK_MAX_INCOMING_MSG_SIZE)
-        return NewlineFramer(max_size=max_size)
+        self._incoming_framer = NewlineFramer(max_size=max_size)
+        return self._incoming_framer
+
+    def allow_spark_messages(self) -> None:
+        """Raises this session's incoming message limit to fit Spark replies.
+
+        Only the session that syncs Spark data needs the larger limit. It is
+        never lowered again, so a reply in flight cannot race the change.
+        """
+        framer = getattr(self, '_incoming_framer', None)
+        if framer and 0 < framer.max_size < SPARK_MAX_INCOMING_MSG_SIZE:
+            framer.max_size = SPARK_MAX_INCOMING_MSG_SIZE
 
 
 class NetworkException(Exception): pass

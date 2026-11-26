@@ -610,6 +610,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
     async def _request(self, method, params=(), timeout=120):
         session = self.interface.session
+        session.allow_spark_messages()
         with session.extended_request_timeout(timeout):
             return await session.send_request(
                 method, list(params), timeout=timeout)
@@ -935,6 +936,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         if not txids:
             return result
         batch_size = 100
+        self.interface.session.allow_spark_messages()
         for start in range(0, len(txids), batch_size):
             batch = txids[start:start + batch_size]
             async with self.interface.session.send_batch() as batcher:
