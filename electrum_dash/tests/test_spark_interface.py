@@ -66,6 +66,12 @@ def _spark_coin(txid: str, value: int, serialized=ROW_BYTES, **kw) -> dict:
     return coin
 
 
+def _set_row(coin: dict) -> list:
+    """The anonymity set row that pairs `coin` with its txid."""
+    return [coin['serialized_coin'],
+            base64.b64encode(bytes.fromhex(coin['txid'])[::-1]).decode(), '']
+
+
 def _bip39_keystore(derivation=None):
     root_seed = keystore.bip39_to_seed(SEED, '')
     return keystore.from_bip43_rootseed(
@@ -287,41 +293,31 @@ class TestSparkWallet(TestCaseForTestnet):
     def test_rejected_coin_names_the_cached_set_that_gave_its_txid(self):
         real = Transaction(_raw_tx(
             [('33' * 32, 0)], [(MINT_SCRIPT, 7000)]))
+        forged = _spark_coin(real.txid(), 7000, serialized=b'\x42' * 100)
         sync = _sync_for(self.wallet)
-
-        async def fetch(txids):
-            return {real.txid(): {'hex': real.serialize(), 'height': 123}}
-        sync._batch_fetch_transactions = fetch
-
-        def coins():
-            return {'forged': _spark_coin(real.txid(), 7000, serialized=b'\x42' * 100,
-                                          l_tag_hash='forged')}
-        row = [coins()['forged']['serialized_coin'],
-               base64.b64encode(bytes.fromhex(real.txid())[::-1]).decode(), '']
-        cached = {'1': {'versions': [{'coins': [row]}]}}
-        self.assertEqual({1}, _run(sync._verify_coin_transactions(coins(), cached)))
+        sync._batch_fetch_transactions = mock.AsyncMock(return_value={
+            real.txid(): {'hex': real.serialize(), 'height': 123}})
+        cached = {'1': {'versions': [{'coins': [_set_row(forged)]}]}}
+        self.assertEqual({1}, _run(sync._verify_coin_transactions(
+            {'forged': dict(forged)}, cached)))
         # The coin came from the mempool, so no cached set is at fault.
-        self.assertEqual(set(), _run(sync._verify_coin_transactions(coins(), {})))
+        self.assertEqual(set(), _run(sync._verify_coin_transactions(
+            {'forged': dict(forged)}, {})))
 
     def test_unconfirmed_coin_is_forgotten_once_its_transaction_is_gone(self):
         sync = _sync_for(self.wallet)
-
-        async def fetch(txids):
-            return {}
-        sync._batch_fetch_transactions = fetch
+        sync._batch_fetch_transactions = mock.AsyncMock(return_value={})
         gone, pending = '66' * 32, '77' * 32
 
         def left(*args):
             coins = {txid: _spark_coin(txid, 5000) for txid in (gone, pending)}
             _run(sync._verify_coin_transactions(coins, *args))
             return set(coins)
-        row = [_spark_coin(gone, 5000)['serialized_coin'],
-               base64.b64encode(bytes.fromhex(gone)[::-1]).decode(), '']
         self.assertEqual({gone, pending}, left())  # mempool list unknown
         self.assertEqual({pending}, left({}, {pending}))
         # A coin that a cached set holds was mined: it is kept.
-        self.assertEqual({gone, pending},
-                         left({'1': {'versions': [{'coins': [row]}]}}, {pending}))
+        cached = {'1': {'versions': [{'coins': [_set_row(_spark_coin(gone, 5000))]}]}}
+        self.assertEqual({gone, pending}, left(cached, {pending}))
 
     def test_imported_spend_must_match_its_txid(self):
         other = Transaction(_raw_tx(
@@ -857,7 +853,7 @@ class TestSparkRefresh(TestCaseForTestnet):
         self.assertEqual(['1'], list(shared.snapshot_groups()))
         self.assertEqual(['a', 'b'], list(shared.snapshot_used_tags()))
         state = wallet.db.get('spark_scan_state')
-        self.assertEqual({'1': [sets['1']['epoch'], block]},
+        self.assertEqual({'1:' + sets['1']['epoch']: block},
                          state['firo_spark_cache_set_block_hash_cache'])
         self.assertTrue(state['scan_complete'])
 
@@ -865,14 +861,11 @@ class TestSparkRefresh(TestCaseForTestnet):
         real = Transaction(_raw_tx([('33' * 32, 0)], [(MINT_SCRIPT, 7000)]))
         coin = _spark_coin(real.txid(), 7000, serialized=b'\x42' * 100, l_tag_hash='ours')
         # The cached row pairs our coin with a transaction that lacks it.
-        row = [coin['serialized_coin'],
-               base64.b64encode(bytes.fromhex(real.txid())[::-1]).decode(), '']
+        row = _set_row(coin)
         wallet, shared, sync = self.server([row])
         shared.update(anon_sets={'1': self.cached(1, [row])}, groups={'1': {'size': 1}})
-
-        async def fetch(txids):
-            return {real.txid(): {'hex': real.serialize(), 'height': 123}}
-        sync._batch_fetch_transactions = fetch
+        sync._batch_fetch_transactions = mock.AsyncMock(return_value={
+            real.txid(): {'hex': real.serialize(), 'height': 123}})
 
         def refresh():
             self.refresh(sync, found={'ours': dict(coin)})

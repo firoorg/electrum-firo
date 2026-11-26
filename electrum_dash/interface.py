@@ -250,12 +250,9 @@ class NotificationSession(RPCSession):
 
     def allow_spark_messages(self) -> None:
         """Raises this session's incoming message limit to fit Spark replies.
-
-        Only the session that syncs Spark data needs the larger limit. It is
-        never lowered again, so a reply in flight cannot race the change.
-        """
-        framer = getattr(self, '_incoming_framer', None)
-        if framer and 0 < framer.max_size < SPARK_MAX_INCOMING_MSG_SIZE:
+        It is never lowered again, so a reply in flight cannot race the change."""
+        framer = self._incoming_framer
+        if 0 < framer.max_size < SPARK_MAX_INCOMING_MSG_SIZE:
             framer.max_size = SPARK_MAX_INCOMING_MSG_SIZE
 
 

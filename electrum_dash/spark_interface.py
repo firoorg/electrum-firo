@@ -169,15 +169,12 @@ def spark_mint_amount(tx: PartialTransaction) -> int:
 
 
 def spark_spend_fee(tx: Transaction) -> Optional[int]:
-    """The fee that a Spark spend declares in its payload, else None.
-
-    The payload opens with the cover set ids, then a map from set id to block
-    hash, then the fee. Version 2 puts its version, input count and output
-    count in front.
-    """
+    """The fee that a Spark spend declares in its payload, else None."""
     if tx.tx_type not in SPARK_SPEND_TYPES:
         return None
     payload = getattr(tx.extra_payload, 'sparkData', None) or b''
+    # Layout: cover set ids, a map from set id to block hash, then the fee.
+    # Version 2 puts its version, input count and output count in front.
     try:
         if tx.tx_type == SPARK_SPEND_V2:
             inputs, pos = _read_compact_size(payload, 1)
@@ -268,21 +265,6 @@ def _createSparkSend(*, privateKeyHex: bytes, index: int,
         additional_tx_size=additionalTxSize,
         index=index,
         is_testnet=isTestNet)
-
-
-def _asyncSparkFeesWrapper(*, privateKeyHex: bytes, index: int, sendAmount: int,
-                           subtractFeeFromAmount: bool, serializedCoins,
-                           privateRecipientsCount: int, utxoNum: int,
-                           additionalTxSize: int = 0) -> int:
-    return libsparkmobile.estimate_spark_fee(
-        privateKeyHex,
-        send_amount=sendAmount,
-        subtract_fee_from_amount=subtractFeeFromAmount,
-        coins=serializedCoins,
-        private_recipients_count=privateRecipientsCount,
-        utxo_num=utxoNum,
-        additional_tx_size=additionalTxSize,
-        index=index)
 
 
 def _anon_set_entry_size(entry) -> int:
@@ -760,7 +742,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         except Exception as e:
             self.logger.info(f'Spark mempool txid fetch failed: {e!r}')
             return [], None
-        mempool_txids_hex = set(hex_to_b64.keys())
+        mempool_txids_hex = set(hex_to_b64)
         self._mempool_txids_checked &= mempool_txids_hex
         to_check = list(mempool_txids_hex - self._mempool_txids_checked)
         self.logger.info(
@@ -779,15 +761,14 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         rows = []
         for txid_key, data in (response.items()
                                if isinstance(response, dict) else ()):
-            # The mempool is a preview, so a malformed entry is skipped: it
-            # must not stop the scan of the confirmed sets.
+            # A malformed entry is skipped: the mempool is only a preview, and
+            # it must not stop the scan of the confirmed sets.
             if not isinstance(data, dict):
                 continue
-            coins = data.get('coins') or []
-            serial_contexts = data.get('serial_context') or []
-            if (not isinstance(coins, list) or not coins
-                    or not isinstance(serial_contexts, list)
-                    or not serial_contexts):
+            coins = data.get('coins')
+            serial_contexts = data.get('serial_context')
+            if not (isinstance(coins, list) and coins
+                    and isinstance(serial_contexts, list) and serial_contexts):
                 continue
             context_b64 = serial_contexts[0]
             if txid_key in hex_to_b64:
@@ -818,10 +799,10 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         prevMeta = FiroCacheCoordinator.getLatestSetInfoForGroupId(
             self.wallet.db, groupId, anon_sets=anon_sets)
         prevSize = int(prevMeta['size']) if prevMeta else 0
-        if (prevMeta and 0 < size < prevSize and prevMeta.get('blockHeight')
+        if (0 < size < prevSize and prevMeta.get('blockHeight')
                 and prevMeta['blockHash'] != blockHash):
             # A server that has not reached the cached block yet has a smaller
-            # set, and that is no contradiction: keep the cache until it has.
+            # set. That is no contradiction: keep the cache until it has.
             anchor = await self._fetch_sectors(
                 groupId, blockHash, 1, start_index=0)
             height = await self._verify_set_block(blockHash, anchor[0])
@@ -830,10 +811,9 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                     f'Spark group {groupId}: server is at height {height}, '
                     f'behind the cached set; keeping the cache')
                 return coins
-        # The cached set is what an earlier server said, and nothing ties it
-        # to the chain. A set can only grow, and at one block it has one size
-        # and hash. Where this server says otherwise, one of the two is wrong
-        # and we cannot tell which, so the group is fetched again in full.
+        # Nothing ties the cached set to the chain. A set only grows, and has
+        # one size and hash per block: where this server says otherwise, we
+        # cannot tell which of the two is wrong, so the group is fetched again.
         if prevMeta and (
                 size < prevSize
                 or (prevMeta['blockHash'] == blockHash
@@ -936,11 +916,10 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         if not tag_count and not self.syncing:
             self.syncing = True
             util.trigger_callback('wallet_updated', self.wallet)
-        # Tags are fetched by position, so tags that are not on the chain
-        # would shift every later fetch. Ask again for the last position we
-        # hold: a tag there that we lack means the cached list is not a
-        # prefix of this server's list. A server that is a few blocks behind
-        # returns nothing here, and the cache is kept.
+        # Tags are fetched by position, so a cached tag that is not on the
+        # chain shifts every later fetch. Ask again for our last position: a
+        # tag there that we lack means the cache is not a prefix of this
+        # server's list. A server that is behind returns nothing there.
         start = max(0, tag_count - 1)
         rows = await self._fetch_used_tags(start)
         restarted = bool(tag_count and rows and rows[0][0] not in used_tags)
@@ -1057,12 +1036,9 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
     async def _verify_coin_transactions(self, coins: dict, anon_sets=None,
                                         mempool_txids=None) -> set:
-        """Checks each coin against the transaction it is said to be in.
-
-        Returns the ids of the cached sets that name a wrong transaction for
-        one of our coins. `mempool_txids` is the server's current list of
-        Spark mempool transactions, or None if it is not known.
-        """
+        """Checks each coin against the transaction it is said to be in, and
+        returns the ids of the cached sets that name a wrong one.
+        `mempool_txids` is the server's Spark mempool, or None if unknown."""
         wallet = self.wallet
         unverified = wallet.get_unverified_txs()
         to_fetch = list({
@@ -1322,15 +1298,11 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 state.get('firo_spark_cache_set_block_hash_cache') or {})
             rawCoinsBySetId = {}
             for groupId in range(1, latestGroupId + 1):
-                # The rows up to the recorded block were scanned already,
-                # unless the set has been fetched whole since (a new epoch).
-                epoch = (anon_sets.get(str(groupId)) or {}).get('epoch', '')
-                scanned = groupIdBlockHashMap.get(str(groupId))
-                if isinstance(scanned, str):
-                    scanned = ['', scanned]  # written before sets had epochs
-                lastCheckedHash = (
-                    scanned[1] if isinstance(scanned, list)
-                    and len(scanned) == 2 and scanned[0] == epoch else None)
+                # The rows up to the recorded block were scanned already. A set
+                # that is fetched whole has a new epoch, so no record yet.
+                epoch = (anon_sets.get(str(groupId)) or {}).get('epoch')
+                scanned = f'{groupId}:{epoch}' if epoch else str(groupId)
+                lastCheckedHash = groupIdBlockHashMap.get(scanned)
                 info = FiroCacheCoordinator.getLatestSetInfoForGroupId(
                     self.wallet.db, groupId, anon_sets=anon_sets)
                 anonymitySetResult = FiroCacheCoordinator.getSetCoinsForGroupId(
@@ -1345,7 +1317,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 if coinsRaw:
                     rawCoinsBySetId[groupId] = coinsRaw
                 if info:
-                    groupIdBlockHashMap[str(groupId)] = [epoch, info['blockHash']]
+                    groupIdBlockHashMap[scanned] = info['blockHash']
 
             if rawCoinsBySetId and not self.syncing:
                 self.syncing = True
@@ -1372,10 +1344,9 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
             bad_groups = await self._verify_coin_transactions(
                 coins, anon_sets, mempool_txids)
-            # A cached row that names the wrong transaction hides the coin,
-            # so its group is not kept: the next refresh fetches it again.
-            # Once per server is enough. If its own rows are the wrong ones,
-            # asking again would only repeat the download on every refresh.
+            # A cached row that names the wrong transaction hides the coin, so
+            # its group is fetched again by the next refresh. Once per server:
+            # if its own rows are the wrong ones, asking again changes nothing.
             refetch = bad_groups - self._refetched_groups
             self._refetched_groups |= refetch
             for gid in refetch:
@@ -1497,12 +1468,11 @@ class SparkInterfaceMixin:
         self.save_db()
 
     def _generateSparkAddress(self, diversifier: int) -> str:
-        is_testnet = bool(constants.net.TESTNET)
-        view_key = getattr(self, 'spark_view_key_hex', None)
-        if not view_key:
+        if not self.spark_view_key_hex:
             raise RuntimeError(_('Spark key is not available'))
         return libsparkmobile.get_address_from_full_view_key_hex(
-            view_key, diversifier, is_testnet=is_testnet)
+            self.spark_view_key_hex, diversifier,
+            is_testnet=bool(constants.net.TESTNET))
 
     @property
     def sparkChangeAddress(self) -> Optional[str]:
@@ -1559,8 +1529,7 @@ class SparkInterfaceMixin:
     def estimateSparkSendAll(self, address: str,
                              password=None) -> Tuple[int, int]:
         """Returns what `address` receives, and the fee, when every spendable
-        Spark coin is sent to it. Only the fee is estimated: no proof is
-        built, so this is quick enough for the GUI thread."""
+        Spark coin is sent to it. No proof is built, so this is quick."""
         if not self.spark_enabled:
             raise RuntimeError(_('Spark is disabled for this session'))
         self._ensure_spark_send_supported()
@@ -1585,15 +1554,14 @@ class SparkInterfaceMixin:
     def _sparkSendAllFee(self, key_data: bytes, amount: int, serializedCoins,
                          *, privateRecipients: int,
                          transparentRecipients: int) -> int:
-        return int(_asyncSparkFeesWrapper(
-            privateKeyHex=key_data,
-            index=self.sparkIndex,
-            sendAmount=amount,
-            subtractFeeFromAmount=True,
-            serializedCoins=serializedCoins,
-            privateRecipientsCount=privateRecipients,
-            utxoNum=transparentRecipients,
-            additionalTxSize=0))
+        return libsparkmobile.estimate_spark_fee(
+            key_data,
+            send_amount=amount,
+            subtract_fee_from_amount=True,
+            coins=serializedCoins,
+            private_recipients_count=privateRecipients,
+            utxo_num=transparentRecipients,
+            index=self.sparkIndex)
 
     def confirmSendSpark(self, tx: PartialTransaction) -> str:
         used = (getattr(tx, '_spark_used_tags', None)
