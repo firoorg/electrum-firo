@@ -282,6 +282,12 @@ QLabel {
     min-width:150px;
 }
 
+/* A label between two fields, not at the start of a row */
+#send_container > QLabel#send_available_label {
+    margin-left:0;
+    min-width:0;
+}
+
 
 /* Receive Container */
 #receive_container {
@@ -420,7 +426,8 @@ QPushButton:focus, #blue_toolbutton:focus {
 }
 
 QPushButton:pressed, #blue_toolbutton:pressed {
-    border:1px solid #f8f8f8;
+    background-color: #e3dedf;
+    border:1px solid #8f8a8b;
 }
 
 QPushButton:disabled, #blue_toolbutton:disabled {
@@ -437,6 +444,9 @@ QPushButton#primary_action:enabled {
 }
 QPushButton#primary_action:hover:enabled {
     background-color: #7c1624;
+}
+QPushButton#primary_action:pressed:enabled {
+    background-color: #5d101b;
 }
 QPushButton#primary_action:focus {
     border: 2px solid #9b1c2e;

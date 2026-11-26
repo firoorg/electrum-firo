@@ -28,7 +28,7 @@ import decimal
 from decimal import Decimal
 from typing import NamedTuple, Sequence, Optional, List, TYPE_CHECKING
 
-from PyQt5.QtCore import QSignalBlocker
+from PyQt5.QtCore import QSignalBlocker, QTimer
 from PyQt5.QtWidgets import QLineEdit
 from PyQt5.QtGui import QFontMetrics, QFont
 
@@ -90,6 +90,24 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
         self.setStyleSheet(frozen_style if b else normal_style)
         for button in self.buttons:
             button.setHidden(b)
+        self.resizeButtons()
+        # The text now has more or less room and may wrap differently.
+        QTimer.singleShot(0, self.update_size)
+
+    def resizeButtons(self):
+        super().resizeButtons()
+        # A Spark address fills several lines. Keep its text out from under
+        # the buttons in the corner.
+        widths = [b.sizeHint().width() for b in self.buttons if not b.isHidden()]
+        margin = sum(widths) + 10 if widths else 0
+        if margin != self.viewportMargins().right():
+            self.setViewportMargins(0, 0, margin, 0)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # The text may now wrap onto more or fewer lines. Fit the height once
+        # this event is done, so that the buttons follow the new height.
+        QTimer.singleShot(0, self.update_size)
 
     def setGreen(self):
         self.setStyleSheet(util.ColorScheme.GREEN.as_stylesheet(True))

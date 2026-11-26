@@ -1102,7 +1102,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         def edit_changed(edit):
             if edit.follows:
                 return
-            edit.setStyleSheet(ColorScheme.DEFAULT.as_stylesheet())
+            edit.setStyleSheet('')  # back to the theme's text colour
             fiat_e.is_last_edited = (edit == fiat_e)
             amount = edit.get_amount()
             rate = self.fx.exchange_rate() if self.fx else Decimal('NaN')
@@ -1838,7 +1838,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.send_source_fixed = QLabel(_('Transparent'))
         grid.addWidget(self.send_source_combo, 3, 1)
         grid.addWidget(self.send_source_fixed, 3, 1)
-        grid.addWidget(QLabel(_('Available')), 3, 2)
+        available_label = QLabel(_('Available'))
+        available_label.setObjectName('send_available_label')
+        grid.addWidget(available_label, 3, 2)
 
         self.av_amnt = BTCAmountEdit(self.get_decimal_point)
         self.av_amnt.setAccessibleName(_('Available'))
