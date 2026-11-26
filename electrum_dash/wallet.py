@@ -77,7 +77,7 @@ from .plugin import run_hook
 from .address_synchronizer import (AddressSynchronizer, TX_HEIGHT_LOCAL,
                                    TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_UNCONFIRMED,
                                    PSCoinRounds)
-from .spark_interface import SparkInterfaceMixin
+from .spark_interface import SparkInterfaceMixin, spark_spend_fee
 from .invoices import Invoice, OnchainInvoice, InvoiceExt
 from .invoices import PR_PAID, PR_UNPAID, PR_UNKNOWN, PR_EXPIRED, PR_UNCONFIRMED, PR_TYPE_ONCHAIN
 from .contacts import Contacts
@@ -541,6 +541,9 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
         is_relevant = tx_wallet_delta.is_relevant
         is_any_input_ismine = tx_wallet_delta.is_any_input_ismine
         fee = tx_wallet_delta.fee
+        if fee is None:
+            # A Spark spend has no transparent inputs to add up: it states its fee.
+            fee = spark_spend_fee(tx)
         exp_n = None
         can_broadcast = False
         tx_hash = tx.txid()  # note: txid can be None! e.g. when called from GUI tx dialog

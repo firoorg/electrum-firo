@@ -13,7 +13,7 @@ from . import constants, libsparkmobile, util
 from .bitcoin import COIN, b58_address_to_hash160, is_address
 from .blockchain import hash_header
 from .crypto import sha256d
-from .dash_tx import SPARK_SPEND_V2, FiroSparkSpend
+from .dash_tx import SPARK_SPEND_TYPES, SPARK_SPEND_V2, FiroSparkSpend
 from .interface import GracefulDisconnect
 from .i18n import _
 from .logging import get_logger
@@ -166,6 +166,32 @@ def _tx_contains_spark_coin(tx: Transaction, serialized_coin: bytes) -> bool:
 
 def spark_mint_amount(tx: PartialTransaction) -> int:
     return sum(o.value for o in tx.outputs() if o.scriptpubkey and o.scriptpubkey[0] == OP_SPARKMINT)
+
+
+def spark_spend_fee(tx: Transaction) -> Optional[int]:
+    """The fee that a Spark spend declares in its payload, else None.
+
+    The payload opens with the cover set ids, then a map from set id to block
+    hash, then the fee. Version 2 puts its version, input count and output
+    count in front.
+    """
+    if tx.tx_type not in SPARK_SPEND_TYPES:
+        return None
+    payload = getattr(tx.extra_payload, 'sparkData', None) or b''
+    try:
+        if tx.tx_type == SPARK_SPEND_V2:
+            inputs, pos = _read_compact_size(payload, 1)
+            _outputs, pos = _read_compact_size(payload, pos)
+        else:
+            inputs, pos = _read_compact_size(payload, 0)
+        pos += 8 * inputs
+        block_hashes, pos = _read_compact_size(payload, pos)
+        pos += (8 + 32) * block_hashes
+    except (IndexError, KeyError, ValueError):
+        return None
+    if len(payload) < pos + 8:
+        return None
+    return int.from_bytes(payload[pos:pos + 8], 'little')
 
 
 def is_exchange_address(address: str) -> bool:
