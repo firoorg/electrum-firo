@@ -177,6 +177,8 @@ class TestSparkWallet(TestCaseForTestnet):
 
         history = self.wallet.get_full_history()
         self.assertEqual(-fee, history[mint.txid()]['bc_value'].value)
+        self.assertEqual('Moved to Spark', history[mint.txid()]['spark_activity'])
+        self.assertEqual(minted, history[mint.txid()]['spark_moved'].value)
         self.assertFalse(history[mint.txid()]['incoming'])
         last = list(history.values())[-1]
         transparent = sum(self.wallet.get_balance())
@@ -321,6 +323,7 @@ class TestSparkWallet(TestCaseForTestnet):
         self.assertEqual(full_values, detailed_values)
         self.assertEqual(-100_000, detailed_values[mint.txid()])
         self.assertEqual(3 * 10**8, detailed_values['cd' * 32])
+        self.assertEqual('Received in Spark', full['cd' * 32]['spark_activity'])
         self.assertEqual(9 * 10**8 - (10 * 10**8 - 100_000),
                          detailed_values[spend.txid()])
         end_balance = detailed['summary']['end']['BTC_balance'].value

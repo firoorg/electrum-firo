@@ -385,6 +385,8 @@ class HistoryModel(QAbstractItemModel, Logger):
         elif col == HistoryColumns.DESCRIPTION:
             if is_parent and not expanded:
                 return QVariant(tx_item['group_label'])
+            elif role == Qt.DisplayRole and tx_item.get('spark_activity'):
+                return QVariant(' · '.join(filter(None, (tx_item['spark_activity'], tx_item['label']))))
             else:
                 return QVariant(tx_item['label'])
         elif col == HistoryColumns.AMOUNT:

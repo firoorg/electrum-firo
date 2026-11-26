@@ -917,8 +917,16 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
     def get_spark_aware_history(self, *, domain=None, group_ps=False) -> List[dict]:
         items = OrderedDictWithIndex()
         for tx_item in self.get_onchain_history(domain=domain, group_ps=group_ps):
+            # The transaction-type column can be hidden. Spark activity still
+            # belongs in History, including transparent receipts on hardware.
+            txid = tx_item['txid']
+            tx_type = tx_item['tx_type'] or classify_onchain_tx_type(self.db.get_transaction(txid))
+            if tx_type in SPARK_SPEND_TYPES and tx_item['bc_value'].value > 0:
+                tx_item['spark_activity'] = _('Received from Spark at transparent address')
+            elif tx_type == PSTxTypes.SPARK_MINT:
+                tx_item['spark_activity'] = _('Transparent to Spark')
             tx_item['_spark_delta'] = 0
-            items[tx_item['txid']] = tx_item
+            items[txid] = tx_item
         if self.spark_enabled:
             self._add_spark_history_items(items)
         out = sorted(
@@ -971,7 +979,8 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
             }
 
         for txid, spent_value in spark_spends.items():
-            if not self.db.get_transaction(txid):
+            tx = self.db.get_transaction(txid)
+            if not tx:
                 continue
             mined = self.spark_spend_mined_info(txid)
             net_value = spark_txs.pop(txid, 0) - spent_value
@@ -986,11 +995,27 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
                     entry['monotonic_timestamp'] = mined.timestamp
                     entry['date'] = timestamp_to_datetime(mined.timestamp)
                 add_to_entry(entry, net_value)
-                continue
-            items[txid] = spark_only_entry(txid, net_value, SPARK_SPEND, mined)
+            else:
+                items[txid] = spark_only_entry(txid, net_value, SPARK_SPEND, mined)
+            if any(o.address and o.value for o in tx.outputs()):
+                items[txid]['spark_activity'] = _('Spark to transparent')
+            else:
+                items[txid]['spark_activity'] = _('Spark to Spark')
         for txid, value in spark_txs.items():
             if txid in items:
-                add_to_entry(items[txid], value)
+                entry = items[txid]
+                tx = self.db.get_transaction(txid)
+                # Attribute a self-transfer only when the wallet funded it and
+                # the two balance changes reconcile to its known network fee.
+                if (entry['fee_sat'] is not None
+                        and entry['bc_value'].value + value == -entry['fee_sat']
+                        and classify_onchain_tx_type(tx) == PSTxTypes.SPARK_MINT
+                        and self.get_wallet_delta(tx).is_all_input_ismine):
+                    entry['spark_activity'] = _('Moved to Spark')
+                    entry['spark_moved'] = Satoshis(value)
+                elif not entry.get('spark_activity'):
+                    entry['spark_activity'] = _('Received in Spark')
+                add_to_entry(entry, value)
                 continue
             coin = spark_meta[txid]
             tx_type = classify_onchain_tx_type(self.db.get_transaction(txid))
@@ -1002,6 +1027,7 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
             mined = TxMinedInfo(height=height, conf=confirmations,
                                 timestamp=coin.get('timestamp'), txpos=None)
             items[txid] = spark_only_entry(txid, value, tx_type, mined)
+            items[txid]['spark_activity'] = _('Received in Spark')
 
     @profiler
     def get_full_history(self, fx=None, *, onchain_domain=None, group_ps=False):

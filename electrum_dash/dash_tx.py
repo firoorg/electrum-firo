@@ -927,8 +927,7 @@ def classify_onchain_tx_type(tx) -> int:
     if tx is None:
         return 0
     try:
-        raw_bytes = bfh(tx.serialize())
-        tx_type = tx_header_to_tx_type(raw_bytes[:4])
+        tx_type = tx_header_to_tx_type(bfh(tx.serialize()[:8]))
     except Exception:
         tx_type = int(getattr(tx, 'tx_type', 0) or 0)
     if tx_type in SPARK_SPEND_TYPES:
