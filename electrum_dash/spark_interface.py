@@ -1692,14 +1692,19 @@ class SparkInterfaceMixin:
         if not libsparkmobile.is_available():
             raise RuntimeError('electrum_libsparkmobile is not available')
 
+        selected = utxos if utxos is not None else coins
+        coinControl = selected is not None
+        availableUtxos = list(selected if coinControl else self.get_spendable_coins(
+            domain, nonlocal_only=nonlocal_only))
+        if not availableUtxos:
+            raise NotEnoughFunds(_('No transparent inputs are available to move to Spark.'))
+        for c in availableUtxos:
+            self.add_input_info(c)
+
         if sparkRecipients is None:
             if not spark_address:
                 raise ValueError(_('Missing spark recipients.'))
             if amount == '!':
-                availableUtxos = list(coins or self.get_spendable_coins(
-                    domain, nonlocal_only=nonlocal_only))
-                for c in availableUtxos:
-                    self.add_input_info(c)
                 mint_value = _sum(availableUtxos)
                 subtractFeeFromAmount = True
             else:
@@ -1718,12 +1723,6 @@ class SparkInterfaceMixin:
         if total <= 0:
             raise ValueError(_('Attempted send of zero amount'))
 
-        coinControl = utxos is not None or coins is not None
-        availableUtxos = list(utxos or coins or self.get_spendable_coins(
-            domain, nonlocal_only=nonlocal_only))
-        for c in availableUtxos:
-            self.add_input_info(c)
-
         if coinControl and _sum(availableUtxos) < total:
             raise NotEnoughFunds(_('Insufficient selected UTXOs!'))
 
@@ -1738,9 +1737,6 @@ class SparkInterfaceMixin:
                 subtractFeeFromAmount = True
             else:
                 subtractFeeFromAmount = False
-
-        if not availableUtxos:
-            raise NotEnoughFunds(_('No available UTXOs found to anonymize'))
 
         sparkMints = self._createSparkMintTransactions(
             subtractFeeFromAmount=subtractFeeFromAmount,

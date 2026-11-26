@@ -19,7 +19,7 @@ from electrum_firo.spark_interface import (
     _parse_group_id, _parse_set_meta, _tx_contains_spark_coin,
     is_exchange_address)
 from electrum_firo.transaction import PartialTransaction, PartialTxOutput, Transaction
-from electrum_firo.util import TxMinedInfo, bfh
+from electrum_firo.util import NotEnoughFunds, TxMinedInfo, bfh
 from electrum_firo.wallet import Abstract_Wallet
 
 from . import TestCaseForTestnet
@@ -184,6 +184,16 @@ class TestSparkWallet(TestCaseForTestnet):
         transparent = sum(self.wallet.get_balance())
         spark = self.wallet.get_spark_balance().total
         self.assertEqual(transparent + spark, last['balance'].value)
+
+    def test_mint_honors_empty_input_selection(self):
+        self._fund(10**8)
+        with mock.patch('electrum_firo.spark_interface.libsparkmobile.is_available', return_value=True), \
+                mock.patch.object(self.wallet, 'get_spendable_coins') as all_coins:
+            for amount in (5000, '!'):
+                for selection in ({'coins': []}, {'utxos': []}):
+                    with self.subTest(amount=amount, selection=selection), self.assertRaises(NotEnoughFunds):
+                        self.wallet.prepareSparkMintTransaction(spark_address='spark', amount=amount, **selection)
+            all_coins.assert_not_called()
 
     def test_split_mint_shows_totals(self):
         self._fund(10**8)
