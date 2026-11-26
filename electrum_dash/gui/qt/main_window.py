@@ -1160,7 +1160,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             else:
                 text = _("Connected")
                 if self.fx.is_enabled():
-                    text += self.fx.get_fiat_status_text(sum(self.wallet.get_balance()),
+                    balance = sum(self.wallet.get_balance())
+                    if self.wallet.spark_enabled:
+                        balance += self.wallet.get_spark_balance().total
+                    text += self.fx.get_fiat_status_text(balance,
                         self.base_unit(), self.get_decimal_point()) or ''
                 if not self.network.proxy:
                     icon = read_QIcon("status_connected%s.png"%fork_str)
@@ -1992,7 +1995,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             mining_fee_str = self.format_amount_and_units(tx._spark_fee)
             QToolTip.showText(
                 self.max_button.mapToGlobal(QPoint(0, 0)),
-                _("Mining fee: {} (can be adjusted on next screen)").format(mining_fee_str))
+                _("Network fee: {} (can be adjusted on next screen)").format(mining_fee_str))
             return
         outputs = self.payto_e.get_outputs(True)
         if not outputs:
@@ -2036,7 +2039,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         # show tooltip explaining max amount
         mining_fee = tx.get_fee()
         mining_fee_str = self.format_amount_and_units(mining_fee)
-        msg = _("Mining fee: {} (can be adjusted on next screen)").format(mining_fee_str)
+        msg = _("Network fee: {} (can be adjusted on next screen)").format(mining_fee_str)
         if x_fee_amount:
             twofactor_fee_str = self.format_amount_and_units(x_fee_amount)
             msg += "\n" + _("2fa fee: {} (for the next batch of transactions)").format(twofactor_fee_str)
@@ -2222,8 +2225,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         if spark_address or (self.payto_e.get_errors() and text.startswith(('sm1', 'st1'))):
             if not self.wallet.spark_enabled:
                 if self.has_hardware_keystore:
-                    return _('Electrum-Firo cannot send to a Spark address with this hardware wallet. Ask the recipient for a transparent Firo address.')
+                    return _('Firo Electrum cannot send to a Spark address with this hardware wallet. Ask the recipient for a transparent Firo address.')
                 if self.wallet.can_use_spark():
+                    from electrum_firo import libsparkmobile
+                    if not libsparkmobile.is_available():
+                        return _('This installation lacks the Spark library, so it cannot pay a Spark address.')
                     return _('Spark is unavailable in this session. Enable Spark to pay a Spark address.')
                 return _('This wallet cannot send to a Spark address. Ask the recipient for a transparent Firo address.')
             if not spark_address:
@@ -2526,8 +2532,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             return
         from electrum_firo import libsparkmobile
         if not libsparkmobile.is_available():
-            self.show_error(_('Spark library is not available.\n'
-                              'Build it with: ./contrib/make_libsparkmobile.sh'))
+            self.show_error(_('This installation lacks the Spark library.'))
             return
         inputs = self.get_coins()
 
@@ -2555,8 +2560,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             return
         from electrum_firo import libsparkmobile
         if not libsparkmobile.is_available():
-            self.show_error(_('Spark library is not available.\n'
-                              'Build it with: ./contrib/make_libsparkmobile.sh'))
+            self.show_error(_('This installation lacks the Spark library.'))
             return
         password = None
         if self.wallet.has_keystore_encryption():
@@ -2598,8 +2602,18 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self._conf_dlg_or_preview_dlg(conf_dlg, external_keypairs)
 
     def _on_conf_dlg_not_enough_funds(self, conf_dlg, external_keypairs):
-        if conf_dlg.route and conf_dlg.route.from_spark:
-            self.show_message(_('Not enough available Spark funds for this payment and its fee.'))
+        route = conf_dlg.route
+        if route and route.from_spark:
+            text = _('Not enough available Spark funds for this payment and its fee.')
+            amount = conf_dlg.output_value
+            if isinstance(amount, int) and self.wallet.get_balance()[0] > amount:
+                text += '\n' + _('Your transparent balance can cover it: set Pay from to Transparent.')
+            self.show_message(text)
+            return
+        if route and route.to_spark:
+            # A move into Spark cannot pay less than the minimum fee rate, so
+            # there is no lower fee to offer here.
+            self.show_message(self.get_text_not_enough_funds_mentioning_frozen())
             return
 
         def enough_funds_cb(can_continue):
