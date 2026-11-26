@@ -42,11 +42,12 @@ class SparkQtTestCase(TestCaseForTestnet):
         if QApplication is None:
             raise SkipTest("PyQt5 is required for the wallet UI tests")
         super().setUpClass()
-        cls.app = QApplication.instance() or QApplication(["spark-qt-tests", "-platform", "offscreen"])
+        if not hasattr(SparkQtTestCase, 'app'):
+            SparkQtTestCase.app = QApplication.instance() or QApplication(["spark-qt-tests", "-platform", "offscreen"])
 
-    def open_wallet(self, *, hardware=False, enable=True, spark_funds=0):
+    def open_wallet(self, *, hardware=False, enable=True, spark_funds=0, native=False):
         config = SimpleConfig({'electrum_path': self.electrum_path, 'check_updates': False})
-        ks = _bip39_keystore()
+        ks = _bip39_keystore(keystore.bip44_derivation(1) if hardware else None)
         db = WalletDB('', manual_upgrades=False)
         if hardware:
             # Only the public key is present, just as in a hardware wallet file.
@@ -58,17 +59,18 @@ class SparkQtTestCase(TestCaseForTestnet):
             db.put('keystore', ks.dump())
         db.put('wallet_type', 'standard')
         db.put('gap_limit', 2)
-        storage = WalletStorage(os.path.join(self.electrum_path, 'wallet'))
+        storage = WalletStorage(os.path.join(self.electrum_path, 'hardware-wallet' if hardware else 'wallet'))
         wallet = Wallet(db, storage, config=config)
         wallet.synchronize()
-        self.enter_patch(mock.patch.object(libsparkmobile, 'is_available', return_value=True))
-        self.enter_patch(mock.patch.object(libsparkmobile, 'is_valid_spark_address',
-                                         side_effect=lambda address, **_: address == SPARK_ADDRESS))
+        if not native:
+            self.enter_patch(mock.patch.object(libsparkmobile, 'is_available', return_value=True))
+            self.enter_patch(mock.patch.object(libsparkmobile, 'is_valid_spark_address',
+                                             side_effect=lambda address, **_: address == SPARK_ADDRESS))
         self.enter_patch(mock.patch.object(util, 'trigger_callback'))
         self.enter_patch(mock.patch.object(ElectrumWindow, 'question', return_value=enable))
         self.enter_patch(mock.patch.object(ElectrumWindow, 'show_message'))
         self.enter_patch(mock.patch.object(ElectrumWindow, 'show_error'))
-        if not hardware:
+        if not hardware and not native:
             self.enter_patch(mock.patch.object(wallet, 'enable_spark',
                                                side_effect=lambda _: setattr(wallet, 'spark_enabled', True)))
             self.enter_patch(mock.patch.object(wallet, 'get_spark_balance', return_value=SparkBalance(
@@ -79,8 +81,10 @@ class SparkQtTestCase(TestCaseForTestnet):
         fx = FxThread(config, None)
         self.addCleanup(util.unregister_callback, fx.set_proxy)
         gui = mock.Mock(app=self.app, config=config, timer=QTimer(), tray=None, gui_thread=threading.current_thread(),
+                        close_window=lambda window: None,
                         daemon=SimpleNamespace(network=None, fx=fx))
         window = ElectrumWindow(gui, wallet)
+        gui.timer.setParent(window)
         window.setAttribute(Qt.WA_DeleteOnClose)
         self.addCleanup(QCoreApplication.sendPostedEvents, None, QEvent.DeferredDelete)
         self.addCleanup(window.close)
@@ -222,7 +226,7 @@ class TestSparkQt(SparkQtTestCase):
         window.update_balances()
         window.resize(640, 400)
         window.show_receive_tab()
-        self.app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.LayoutRequest)
         self.assertTrue(window.balance_details_button.isVisible())
         self.assertFalse(window.spark_detail_label.isVisible())
         window.balance_details_button.click()

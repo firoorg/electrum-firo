@@ -36,7 +36,5 @@ jobs:
           ELECTRUM_REQUIRE_LIBSPARKMOBILE: '1'
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m unittest -v \
-            electrum_dash.tests.test_libsparkmobile \
-            electrum_dash.tests.test_spark_interface \
-            electrum_dash.tests.test_spark_qt
+          python -m unittest -v electrum_dash.tests.test_libsparkmobile
+          python -m unittest discover -v -s electrum_dash/tests -t . -p 'test_spark*.py'
