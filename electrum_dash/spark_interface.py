@@ -13,7 +13,8 @@ from . import constants, libsparkmobile, util
 from .bitcoin import COIN, b58_address_to_hash160, is_address
 from .blockchain import hash_header
 from .crypto import sha256d
-from .dash_tx import SPARK_SPEND_TYPES, SPARK_SPEND_V2, FiroSparkSpend
+from .dash_tx import (OP_SPARKMINT, OP_SPARKSPEND, SPARK_SPEND_TYPES,
+                      SPARK_SPEND_V2, FiroSparkSpend)
 from .interface import GracefulDisconnect
 from .i18n import _
 from .logging import get_logger
@@ -27,11 +28,8 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-kDefaultSparkIndex = 1
 MAX_NEW_TX_WEIGHT = 1_000_000
-OP_SPARKMINT = 0xd1
 OP_SPARKSMINT = 0xd2
-OP_SPARKSPEND = 0xd3
 MINT_INPUT_SEQUENCE = 0xffffffff - 1
 SPEND_MISSING_CHECKS_BEFORE_RELEASE = 3
 MAX_SPARK_SET_SIZE = 32_768
@@ -1380,18 +1378,13 @@ class SparkInterfaceMixin:
             subtract_fee_from_amount=True,
             coins=serializedCoins,
             private_recipients_count=privateRecipients,
-            utxo_num=transparentRecipients,
-            index=self.sparkIndex)
+            utxo_num=transparentRecipients)
 
     def confirmSendSpark(self, tx: PartialTransaction) -> None:
         self.note_spark_broadcast(tx)
         self.mark_spark_coins_used(tx._spark_used_tags, spent_txid=tx.txid())
         if self.spark_synchronizer:
             self.spark_synchronizer.trigger()
-
-    @property
-    def sparkIndex(self) -> int:
-        return kDefaultSparkIndex
 
     def _createSparkMintTransactions(
             self, *, availableUtxos: Sequence[PartialTxInput], address: str,
@@ -1671,7 +1664,6 @@ class SparkInterfaceMixin:
             id_and_block_hashes=[(s['set_id'], s['block_hash'])
                                  for s in coverSets],
             tx_hash=sha256d(bfh(tx.serialize_to_network(include_sigs=True))),
-            index=self.sparkIndex,
             is_testnet=is_testnet)
 
         for outputScript in spend['output_scripts']:

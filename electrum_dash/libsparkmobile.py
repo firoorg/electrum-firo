@@ -17,9 +17,6 @@ SPARK_KEY_INDEX = 1
 
 BIP44_SPARK_CHAIN = 6
 SPARK_CHANGE_DIVERSIFIER = 0x270F
-OP_SPARKMINT = 0xd1
-OP_SPARKSMINT = 0xd2
-OP_SPARKSPEND = 0xd3
 
 
 class _ValidAddr(Structure):
@@ -114,20 +111,12 @@ class _OutputScript(Structure):
     _fields_ = [('bytes', POINTER(c_ubyte)), ('length', c_int)]
 
 
-class _UsedCoin(Structure):
-    _fields_ = [
-        ('serializedCoin', POINTER(_CCDataStream)),
-        ('serializedCoinContext', POINTER(_CCDataStream)),
-        ('groupId', c_int), ('height', c_int),
-    ]
-
-
 class _SparkSpendTransactionResult(Structure):
     _fields_ = [
         ('data', POINTER(c_ubyte)), ('dataLength', c_int),
         ('outputScripts', POINTER(_OutputScript)),
         ('outputScriptsLength', c_int),
-        ('usedCoins', POINTER(_UsedCoin)), ('usedCoinsLength', c_int),
+        ('usedCoins', POINTER(_SpendCoinData)), ('usedCoinsLength', c_int),
         ('fee', c_int64), ('isError', c_int),
     ]
 
@@ -220,13 +209,27 @@ def _require():
     return _lib
 
 
-def get_address(key_data: bytes, diversifier: int = 1, *,
-                index: int = SPARK_KEY_INDEX, is_testnet: bool = False) -> str:
-    lib = _require()
+def _buf(raw):
+    return (c_ubyte * len(raw)).from_buffer_copy(raw)
+
+
+def _key_buf(key_data: bytes):
     if len(key_data) != 32:
         raise ValueError('key_data must be 32 bytes')
-    buf = (c_ubyte * 32).from_buffer_copy(key_data)
-    ptr = lib.getAddress(buf, len(key_data), index, diversifier,
+    return _buf(key_data)
+
+
+def _b64(value):
+    """Coin data arrives as bytes or as base64 text."""
+    if isinstance(value, str):
+        return base64.b64decode(''.join(value.splitlines()))
+    return value
+
+
+def get_address(key_data: bytes, diversifier: int = 1, *,
+                is_testnet: bool = False) -> str:
+    lib = _require()
+    ptr = lib.getAddress(_key_buf(key_data), 32, SPARK_KEY_INDEX, diversifier,
                          int(is_testnet))
     if not ptr:
         raise RuntimeError('getAddress failed')
@@ -253,12 +256,10 @@ def is_valid_spark_address(address: str, *, is_testnet: bool = False) -> bool:
         lib.native_free(res)
 
 
-def create_full_view_key(key_data: bytes, *,
-                         index: int = SPARK_KEY_INDEX) -> c_void_p:
-    if len(key_data) != 32:
-        raise ValueError('key_data must be 32 bytes')
-    key = (c_ubyte * 32).from_buffer_copy(key_data)
-    result = _require().getFullViewKeyFromPrivateKeyData(key, 32, index)
+def create_full_view_key(key_data: bytes) -> c_void_p:
+    key = _key_buf(key_data)
+    result = _require().getFullViewKeyFromPrivateKeyData(
+        key, 32, SPARK_KEY_INDEX)
     if not result:
         raise RuntimeError('getFullViewKeyFromPrivateKeyData failed')
     return result
@@ -270,8 +271,7 @@ def delete_full_view_key(full_view_key: c_void_p) -> None:
 
 def deserialize_full_view_key(full_view_key_hex: str) -> c_void_p:
     raw = bytes.fromhex(full_view_key_hex)
-    buf = (c_ubyte * len(raw)).from_buffer_copy(raw)
-    result = _require().deserializeFullViewKey(buf, len(raw))
+    result = _require().deserializeFullViewKey(_buf(raw), len(raw))
     if not result:
         raise RuntimeError('deserializeFullViewKey failed')
     return result
@@ -289,9 +289,8 @@ def serialize_full_view_key(full_view_key: c_void_p) -> bytes:
         lib.native_free(ptr)
 
 
-def get_full_view_key_hex(key_data: bytes, *,
-                          index: int = SPARK_KEY_INDEX) -> str:
-    view_key = create_full_view_key(key_data, index=index)
+def get_full_view_key_hex(key_data: bytes) -> str:
+    view_key = create_full_view_key(key_data)
     try:
         return serialize_full_view_key(view_key).hex()
     finally:
@@ -300,12 +299,12 @@ def get_full_view_key_hex(key_data: bytes, *,
 
 def get_address_from_full_view_key_hex(
         full_view_key_hex: str, diversifier: int, *,
-        index: int = SPARK_KEY_INDEX, is_testnet: bool = False) -> str:
+        is_testnet: bool = False) -> str:
     lib = _require()
     view_key = deserialize_full_view_key(full_view_key_hex)
     try:
         ptr = lib.getAddressFromFullViewKey(
-            view_key, index, diversifier, int(is_testnet))
+            view_key, SPARK_KEY_INDEX, diversifier, int(is_testnet))
         if not ptr:
             raise RuntimeError('getAddressFromFullViewKey failed')
         try:
@@ -320,11 +319,9 @@ def identify_and_recover_coin(
         serialized_coin: bytes, context: bytes, full_view_key: c_void_p, *,
         is_testnet: bool = False) -> Optional[Dict]:
     lib = _require()
-    coin_buf = (c_ubyte * len(serialized_coin)).from_buffer_copy(serialized_coin)
-    context_buf = (c_ubyte * len(context)).from_buffer_copy(context)
     result = lib.idAndRecoverCoinByFullViewKey(
-        coin_buf, len(serialized_coin), full_view_key,
-        context_buf, len(context), int(is_testnet))
+        _buf(serialized_coin), len(serialized_coin), full_view_key,
+        _buf(context), len(context), int(is_testnet))
     if not result:
         return None
     data = result.contents
@@ -361,8 +358,7 @@ def hash_tags(tags: Sequence[bytes]) -> List[str]:
         raise ValueError('each Spark tag must be 34 bytes')
     lib = _require()
     raw = b''.join(tags)
-    buf = (c_ubyte * len(raw)).from_buffer_copy(raw)
-    result = lib.hashTags(buf, len(raw), len(tags))
+    result = lib.hashTags(_buf(raw), len(raw), len(tags))
     if not result:
         raise RuntimeError('hashTags failed')
     try:
@@ -397,12 +393,11 @@ def _make_data_stream(raw, keep: list) -> _CCDataStream:
     if not isinstance(raw, (bytes, bytearray, memoryview)):
         raise ValueError(
             f'spark coin data must be bytes, got {type(raw).__name__}')
-    raw = bytes(raw)
-    buf = (c_ubyte * len(raw)).from_buffer_copy(raw)
+    buf = _buf(bytes(raw))
     keep.append(buf)
     stream = _CCDataStream()
     stream.data = ctypes.cast(buf, POINTER(c_ubyte))
-    stream.length = len(raw)
+    stream.length = len(buf)
     return stream
 
 
@@ -411,14 +406,11 @@ def _make_spend_coins(
     n = len(coins)
     arr = (_SpendCoinData * n)()
     for i, coin in enumerate(coins):
-        serialized = coin.get('serialized_coin') or coin.get('serializedCoin')
-        context = (coin.get('serialized_coin_context')
-                   or coin.get('context')
-                   or coin.get('serial_context'))
-        if isinstance(serialized, str):
-            serialized = base64.b64decode(''.join(serialized.splitlines()))
-        if isinstance(context, str):
-            context = base64.b64decode(''.join(context.splitlines()))
+        serialized = _b64(
+            coin.get('serialized_coin') or coin.get('serializedCoin'))
+        context = _b64(coin.get('serialized_coin_context')
+                       or coin.get('context')
+                       or coin.get('serial_context'))
         if not serialized or not context:
             raise ValueError(f'spend coin {i} is missing serialized coin data')
         coin_stream = _make_data_stream(serialized, keep)
@@ -443,16 +435,14 @@ def estimate_spark_fee(
         coins: Sequence[Dict],
         private_recipients_count: int,
         utxo_num: int = 0,
-        additional_tx_size: int = 0,
-        index: int = SPARK_KEY_INDEX) -> int:
+        additional_tx_size: int = 0) -> int:
     lib = _require()
-    if len(key_data) != 32:
-        raise ValueError('key_data must be 32 bytes')
+    key = _key_buf(key_data)
     keep = []
-    key = (c_ubyte * 32).from_buffer_copy(key_data)
     coin_arr = _make_spend_coins(coins, keep)
     res = lib.estimateSparkFee(
-        key, 32, index, int(send_amount), int(subtract_fee_from_amount),
+        key, 32, SPARK_KEY_INDEX, int(send_amount),
+        int(subtract_fee_from_amount),
         coin_arr, len(coins), int(private_recipients_count),
         int(utxo_num), int(additional_tx_size))
     if not res:
@@ -476,14 +466,11 @@ def create_spark_spend_transaction(
         id_and_block_hashes: Sequence[Tuple[int, bytes]],
         tx_hash: bytes,
         additional_tx_size: int = 0,
-        index: int = SPARK_KEY_INDEX,
         is_testnet: bool = False) -> Dict:
     lib = _require()
-    if len(key_data) != 32:
-        raise ValueError('key_data must be 32 bytes')
+    key = _key_buf(key_data)
     tx_hash = _as_hash_bytes(tx_hash, 'tx_hash')
     keep = []
-    key = (c_ubyte * 32).from_buffer_copy(key_data)
 
     recip_n = len(recipients)
     recip_arr = (_CRecip * max(recip_n, 1))()
@@ -516,16 +503,12 @@ def create_spark_spend_transaction(
         set_coins = aset['coins']
         streams = (_CCDataStream * max(len(set_coins), 1))()
         for j, serialized in enumerate(set_coins):
-            if isinstance(serialized, str):
-                serialized = base64.b64decode(''.join(serialized.splitlines()))
-            streams[j] = _make_data_stream(serialized, keep)
+            streams[j] = _make_data_stream(_b64(serialized), keep)
         keep.append(streams)
         cover_arr[i].cover_set = ctypes.cast(streams, POINTER(_CCDataStream))
         cover_arr[i].cover_setLength = len(set_coins)
-        set_hash = aset['set_hash']
-        if isinstance(set_hash, str):
-            set_hash = base64.b64decode(''.join(set_hash.splitlines()))
-        hash_buf = (c_ubyte * len(set_hash)).from_buffer_copy(set_hash)
+        set_hash = _b64(aset['set_hash'])
+        hash_buf = _buf(set_hash)
         keep.append(hash_buf)
         cover_arr[i].cover_set_representation = ctypes.cast(
             hash_buf, POINTER(c_ubyte))
@@ -536,17 +519,16 @@ def create_spark_spend_transaction(
     id_n = len(id_and_block_hashes)
     id_arr = (_BlockHashAndId * max(id_n, 1))()
     for i, (set_id, block_hash) in enumerate(id_and_block_hashes):
-        buf = (c_ubyte * 32).from_buffer_copy(
-            _as_hash_bytes(block_hash, 'block_hash'))
+        buf = _buf(_as_hash_bytes(block_hash, 'block_hash'))
         keep.append(buf)
         id_arr[i].hash = ctypes.cast(buf, POINTER(c_ubyte))
         id_arr[i].hashLength = 32
         id_arr[i].id = int(set_id)
     keep.append(id_arr)
 
-    tx_buf = (c_ubyte * 32).from_buffer_copy(tx_hash)
+    tx_buf = _buf(tx_hash)
     res = lib.cCreateSparkSpendTransaction(
-        key, 32, index,
+        key, 32, SPARK_KEY_INDEX,
         recip_arr if recip_n else None, recip_n,
         priv_arr if priv_n else None, priv_n,
         coin_arr, len(coins),
@@ -614,7 +596,6 @@ def create_spark_spend_transaction(
 
 
 def serialize_mint_context(inputs: Sequence[Tuple[bytes, int]]) -> bytes:
-
     lib = _require()
     n = len(inputs)
     if not n:
@@ -624,7 +605,7 @@ def serialize_mint_context(inputs: Sequence[Tuple[bytes, int]]) -> bytes:
     for i, (txid, vout) in enumerate(inputs):
         if len(txid) != 32:
             raise ValueError('txid must be 32 bytes')
-        buf = (c_ubyte * 32).from_buffer_copy(txid)
+        buf = _buf(txid)
         keep.append(buf)
         arr[i].txHash = ctypes.cast(buf, POINTER(c_ubyte))
         arr[i].txHashLength = 32
@@ -655,8 +636,8 @@ def create_spark_mint_recipients(
         arr[i].value = int(value)
         arr[i].memo = (memo or '').encode('utf-8')
     if serial_context:
-        ctx = (c_ubyte * len(serial_context)).from_buffer_copy(serial_context)
-        ctx_ptr, ctx_len = ctypes.cast(ctx, POINTER(c_ubyte)), len(serial_context)
+        ctx = _buf(serial_context)
+        ctx_ptr, ctx_len = ctypes.cast(ctx, POINTER(c_ubyte)), len(ctx)
     else:
         ctx_ptr, ctx_len = None, 0
     res = lib.cCreateSparkMintRecipients(
