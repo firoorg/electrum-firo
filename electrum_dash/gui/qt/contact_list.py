@@ -61,9 +61,7 @@ class ContactList(MyTreeView):
         self.update()
 
     def on_edited(self, idx, edit_key, *, text):
-        _type, prior_name = self.parent.contacts.pop(edit_key)
         self.parent.set_contact(text, edit_key)
-        self.update()
 
     def create_menu(self, position):
         menu = QMenu()

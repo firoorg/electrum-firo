@@ -81,7 +81,7 @@ from electrum_firo.network import (Network, TxBroadcastError, BestEffortRequestF
                                    UntrustedServerReturnedError, NetworkException)
 from electrum_firo.exchange_rate import FxThread
 from electrum_firo.simple_config import SimpleConfig
-from electrum_firo.spark_interface import is_exchange_address
+from electrum_firo.spark_interface import is_exchange_address, spark_mint_amount
 from electrum_firo.logging import Logger
 
 from .exception_window import Exception_Hook
@@ -211,8 +211,7 @@ def ps_ks_protected(func):
 
 class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
-    payment_request_ok_signal = pyqtSignal()
-    payment_request_error_signal = pyqtSignal()
+    payment_request_received = pyqtSignal(object, object, bool)
     network_signal = pyqtSignal(str, object)
     alias_received_signal = pyqtSignal()
     computing_privkeys_signal = pyqtSignal()
@@ -324,8 +323,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         for i in range(wrtabs.count()):
             QShortcut(QKeySequence("Alt+" + str(i + 1)), self, lambda i=i: wrtabs.setCurrentIndex(i))
 
-        self.payment_request_ok_signal.connect(self.payment_request_ok)
-        self.payment_request_error_signal.connect(self.payment_request_error)
+        self.payment_request_received.connect(self.on_pr)
         self.show_error_signal.connect(self.show_error)
         self.history_list.setFocus(True)
 
@@ -1307,7 +1305,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
     def move_to_spark(self):
         if not self.wallet.spark_enabled:
             return
-        if (self.payto_e.toPlainText() or self.amount_e.text() or self.message_e.text() or self.payment_request):
+        if self.has_payment_draft():
             if not self.question(_('Replace the current payment draft with a transfer to your Spark balance?')):
                 return
         try:
@@ -1603,7 +1601,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 if not encrypted:
                     return
 
-        self.send_from_private = True
+        if not self.has_payment_draft():
+            self.send_from_private = True
         self.receive_type_combo.setVisible(True)
         self.receive_type_combo.setCurrentIndex(self.receive_type_combo.findData(True))
         self.spark_rescan_menu.setVisible(True)
@@ -1790,6 +1789,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.receive_address_e.setToolTip("")
 
     def create_send_tab(self):
+        self._send_draft_id = object()
         # A 4-column grid layout.  All the stretch is in the last column.
         # The exchange rate plugin adds a fiat widget in column 2
         self.send_grid = grid = QGridLayout()
@@ -1927,10 +1927,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         return w
 
     def spend_max(self):
+        # The previous quote no longer applies if the new calculation fails or is cancelled.
+        self.max_button.setChecked(False)
+        self.amount_e.setAmount(None)
         if run_hook('abort_send', self):
             return
         if self._spark_send_error():
-            self.max_button.setChecked(False)
             return
         if self.send_from_private:
             if not self.wallet.spark_enabled:
@@ -1944,7 +1946,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 password = self.password_dialog(
                     _('Enter your password to send from your Spark balance'))
                 if password is None:
-                    self.max_button.setChecked(False)
                     return
             try:
                 tx = self.wallet.prepareSendSpark(
@@ -1952,11 +1953,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                     amount='!',
                     password=password)
             except NotEnoughFunds:
-                self.max_button.setChecked(False)
                 self.show_error(_('Not enough private funds'))
                 return
             except Exception as e:
-                self.max_button.setChecked(False)
                 self.show_error(str(e))
                 return
             self.max_button.setChecked(True)
@@ -1986,11 +1985,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 except (NotEnoughFunds, NoDynamicFeeEstimates):
                     tx = make_tx(0)
             except NotEnoughFunds:
-                self.max_button.setChecked(False)
                 self.show_error(self.get_text_not_enough_funds_mentioning_frozen())
                 return
             except Exception as e:
-                self.max_button.setChecked(False)
                 self.show_error(str(e))
                 return
             self.max_button.setChecked(True)
@@ -2027,11 +2024,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 # if so, still provide opportunity to set lower fees.
                 tx = make_tx(0)
         except (MultipleSpendMaxTxOutputs, DashTxError) as e:
-            self.max_button.setChecked(False)
             self.show_error(str(e))
             return
         except NotEnoughFunds as e:
-            self.max_button.setChecked(False)
             text = self.get_text_not_enough_funds_mentioning_frozen()
             self.show_error(text)
             return
@@ -2549,6 +2544,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         conf_dlg = ConfirmTxDialog(
             window=self, make_tx=make_tx, output_value=amount,
             is_sweep=False, route=self._payment_route(spark_address, from_spark=False, to_spark=True))
+        conf_dlg.submitted_draft = self.payment_draft_snapshot()
         conf_dlg.wallet_note = self.message_e.text()
         conf_dlg.disable_preview = True
         conf_dlg.preview_button.setVisible(False)
@@ -2587,6 +2583,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             window=self, make_tx=make_tx, output_value=amount,
             is_sweep=False, route=self._payment_route(address, from_spark=True,
                                                        to_spark=bool(self.payto_e.get_spark_address())))
+        conf_dlg.submitted_draft = self.payment_draft_snapshot()
         conf_dlg.wallet_note = self.message_e.text()
         conf_dlg.password_required = False
         conf_dlg.pw_label.setVisible(False)
@@ -2641,10 +2638,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 self.show_message(str(e))
                 return
         if is_send:
-            pr = self.payment_request
+            submitted_draft = None
             if conf_dlg.route and (conf_dlg.route.from_spark or conf_dlg.route.to_spark):
-                self.pending_invoice = self.pending_invoice_ext = None
+                pr = None
+                submitted_draft = conf_dlg.submitted_draft
             else:
+                pr = self.payment_request
                 self.save_pending_invoice()
             sparkMints = list(getattr(tx, 'sparkMints', None) or [])
 
@@ -2652,9 +2651,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 if not success:
                     return
                 if sparkMints:
-                    self.broadcast_spark_mints([tx] + sparkMints, password, wallet_note=conf_dlg.wallet_note)
+                    self.broadcast_spark_mints([tx] + sparkMints, password, wallet_note=conf_dlg.wallet_note,
+                                               submitted_draft=submitted_draft)
                 else:
-                    self.broadcast_or_show(tx, pr, wallet_note=conf_dlg.wallet_note)
+                    self.broadcast_or_show(tx, pr, wallet_note=conf_dlg.wallet_note, submitted_draft=submitted_draft)
 
             self.sign_tx_with_password(tx, callback=sign_done, password=password,
                                        external_keypairs=external_keypairs)
@@ -2668,7 +2668,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             preview_dlg.bg_update(lambda x: preview_dlg.update_and_show())
 
     def broadcast_or_show(self, tx: Transaction,
-                          pr: Optional[paymentrequest.PaymentRequest], *, wallet_note=''):
+                          pr: Optional[paymentrequest.PaymentRequest], *, wallet_note='', submitted_draft=None):
         if not tx.is_complete():
             self.show_transaction(tx)
             return
@@ -2676,7 +2676,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.show_error(_("You can't broadcast a transaction without a live network connection."))
             self.show_transaction(tx)
             return
-        self.broadcast_transaction(tx, pr, wallet_note=wallet_note)
+        self.broadcast_transaction(tx, pr, wallet_note=wallet_note, submitted_draft=submitted_draft)
 
     @protected
     @ps_ks_protected
@@ -2765,7 +2765,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         WaitingDialog(self, msg, task, on_success, on_failure)
 
     def broadcast_transaction(self, tx: Transaction,
-                              pr: Optional[paymentrequest.PaymentRequest], *, wallet_note=''):
+                              pr: Optional[paymentrequest.PaymentRequest], *, wallet_note='', submitted_draft=None):
 
         def broadcast_thread():
             # non-GUI thread
@@ -2811,6 +2811,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                         self.wallet.confirmSendSpark(tx)
                         self.update_send_mode_balance()
                         self.need_update.set()
+                    self.clear_submitted_draft(submitted_draft)
                     parent.show_message(_('Payment sent.') + '\n' + msg)
                     self.invoice_list.update()
                 else:
@@ -2820,7 +2821,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         WaitingDialog(self, _('Broadcasting transaction...'),
                       broadcast_thread, broadcast_done, self.on_error)
 
-    def broadcast_spark_mints(self, txs: List[PartialTransaction], password, *, wallet_note=''):
+    def broadcast_spark_mints(self, txs: List[PartialTransaction], password, *, wallet_note='', submitted_draft=None):
         if not self.network:
             self.show_error(_("You can't broadcast a transaction without a live network connection."))
             return
@@ -2830,21 +2831,24 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             sent = []
             for tx in txs:
                 if not tx.is_complete():
-                    return sent, _('Transaction is not fully signed') + f': {tx.txid()}'
+                    return sent, _('Transaction is not fully signed'), None
                 try:
                     coro = self.wallet.psman.broadcast_transaction(tx)
                     self.network.run_from_another_thread(coro)
                 except TxBroadcastError as e:
-                    return sent, e.get_message_for_gui()
-                except BestEffortRequestFailed as e:
-                    return sent, repr(e)
+                    return sent, e.get_message_for_gui(), tx.txid()
+                except Exception as e:
+                    # A missing response cannot establish whether the server accepted this transaction.
+                    return sent, repr(e), tx.txid()
                 sent.append(tx.txid())
-            return sent, None
+            return sent, None, None
 
         parent = self.top_level_window(lambda win: isinstance(win, MessageBoxMixin))
 
         def broadcast_done(result):
-            sent, error = result
+            sent, error, uncertain_txid = result
+            if sent or uncertain_txid:
+                self.clear_submitted_draft(submitted_draft)
             if wallet_note:
                 for txid in sent:
                     self.wallet.set_label(txid, wallet_note)
@@ -2853,7 +2857,17 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             if error is None:
                 parent.show_message(_('Payment sent.') + '\n' + '\n'.join(sent))
                 return
-            msg = _('Sent {} of {} Spark mint transactions.').format(len(sent), len(txs))
+            submitted = sum(spark_mint_amount(tx) for tx in txs[:len(sent)])
+            remaining = txs[len(sent):]
+            msg = _('Submitted {count} of {total} transactions ({amount}).').format(
+                count=len(sent), total=len(txs), amount=self.format_amount_and_units(submitted))
+            if uncertain_txid:
+                msg += '\n' + _('Check the status of transaction {txid} ({amount}) before retrying.').format(
+                    txid=uncertain_txid, amount=self.format_amount_and_units(spark_mint_amount(remaining[0])))
+                remaining = remaining[1:]
+            if remaining:
+                msg += '\n' + _('Unsent recipient amount: {}.').format(
+                    self.format_amount_and_units(sum(spark_mint_amount(tx) for tx in remaining)))
             if sent:
                 msg += '\n' + '\n'.join(sent)
             parent.show_error(msg + '\n\n' + error)
@@ -2926,26 +2940,45 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.payment_request = None
         self.do_clear()
 
-    def on_pr(self, request: 'paymentrequest.PaymentRequest'):
+    def on_pr(self, uri, request: 'paymentrequest.PaymentRequest', verified: bool):
+        if self.payto_URI is not uri:
+            return
         self.set_onchain(True)
         self.payment_request = request
-        if self.payment_request.verify(self.contacts):
-            self.payment_request_ok_signal.emit()
+        if verified:
+            self.payment_request_ok()
         else:
-            self.payment_request_error_signal.emit()
+            self.payment_request_error()
 
     def set_onchain(self, b):
         self._is_onchain = b
         self.max_button.setEnabled(b)
 
+    def has_payment_draft(self):
+        return bool(self.payto_e.toPlainText() or self.amount_e.text() or
+                    self.message_e.text() or self.payto_URI or self.payment_request)
+
+    def payment_draft_snapshot(self):
+        return (self._send_draft_id, self.payto_e.toPlainText(), self.amount_e.text(), self.message_e.text(),
+                self.max_button.isChecked(), self.send_from_private, self.payto_URI, self.payment_request)
+
+    def clear_submitted_draft(self, submitted_draft):
+        if submitted_draft is not None and self.payment_draft_snapshot() == submitted_draft:
+            self.pending_invoice = self.pending_invoice_ext = None
+            self.do_clear()
+
     def pay_to_URI(self, URI):
         if not URI:
             return
         try:
-            out = util.parse_URI(URI, self.on_pr)
+            out = util.parse_URI(URI)
         except InvalidBitcoinURI as e:
             self.show_error(_("Error parsing URI") + f":\n{e}")
             return
+        if self.has_payment_draft() and not self.question(_('Replace the current payment draft with this payment request?')):
+            return
+        self.do_clear()
+        self.pending_invoice = self.pending_invoice_ext = None
         self.show_send_tab()
         self.payto_URI = out
         r = out.get('r')
@@ -2953,6 +2986,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         name = out.get('name')
         if r or (name and sig):
             self.prepare_for_payment_request()
+            def receive_request(request):
+                self.payment_request_received.emit(out, request, request.verify(self.contacts))
+            util.parse_URI(URI, receive_request)
             return
         address = out.get('address')
         amount = out.get('amount')
@@ -2965,12 +3001,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.payto_e.setText(address)
         if message:
             self.message_e.setText(message)
-        if amount:
+        if amount is not None:
             self.amount_e.setAmount(amount)
             self.amount_e.textEdited.emit("")
 
 
     def do_clear(self):
+        self._send_draft_id = object()
         self.max_button.setChecked(False)
         self.payment_request = None
         self.payto_URI = None
@@ -3062,6 +3099,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.show_message(msg, title=_('Pay to many'))
 
     def payto_contacts(self, labels):
+        if len(labels) > 1 and any(util.is_spark_address(key) for key in labels):
+            self.show_error(_('Payments to Spark addresses support one recipient at a time.'))
+            return
         paytos = [self.get_contact_payto(label) for label in labels]
         self.show_send_tab()
         if len(paytos) == 1:
@@ -3073,7 +3113,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.payto_e.setFocus()
 
     def set_contact(self, label, address):
-        if not is_address(address):
+        address = address.strip()
+        if not util.is_payment_address(address):
             self.show_error(_('Invalid Address'))
             self.contact_list.update()  # Displays original unchanged value
             return False
@@ -3922,7 +3963,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         export_meta_gui(self, _('requests'), self.wallet.export_requests)
 
     def import_contacts(self):
-        import_meta_gui(self, _('contacts'), self.contacts.import_file, self.contact_list.update)
+        def refresh():
+            self.contact_list.update()
+            self.update_completions()
+        import_meta_gui(self, _('contacts'), self.contacts.import_file, refresh)
 
     def export_contacts(self):
         export_meta_gui(self, _('contacts'), self.contacts.export_file)

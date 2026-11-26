@@ -164,6 +164,10 @@ def _tx_contains_spark_coin(tx: Transaction, serialized_coin: bytes) -> bool:
     return False
 
 
+def spark_mint_amount(tx: PartialTransaction) -> int:
+    return sum(o.value for o in tx.outputs() if o.scriptpubkey and o.scriptpubkey[0] == OP_SPARKMINT)
+
+
 def is_exchange_address(address: str) -> bool:
     try:
         addrtype, _h160 = b58_address_to_hash160(address)
@@ -1767,9 +1771,7 @@ class SparkInterfaceMixin:
         # The send dialogs show only the first transaction, so it carries
         # the totals over all of them.
         first._spark_fee = sum(tx._spark_fee for tx in sparkMints)
-        first._spark_send_amount = sum(
-            o.value for tx in sparkMints for o in tx.outputs()
-            if o.scriptpubkey[0] == OP_SPARKMINT)
+        first._spark_send_amount = sum(spark_mint_amount(tx) for tx in sparkMints)
         return first
 
     def confirmSparkMintTransactions(self, sparkMints: Sequence[PartialTransaction],

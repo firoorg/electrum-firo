@@ -866,6 +866,23 @@ PAY_BIP21_URI_SCHEME = 'pay'
 class InvalidBitcoinURI(Exception): pass
 
 
+def has_spark_address_prefix(address: str) -> bool:
+    return isinstance(address, str) and address.lower().startswith(('sm1', 'st1'))
+
+
+def is_spark_address(address: str) -> bool:
+    if not has_spark_address_prefix(address) or not address.isascii() or not address.isalnum():
+        return False
+    from . import constants, libsparkmobile
+    return (libsparkmobile.is_available()
+            and libsparkmobile.is_valid_spark_address(address, is_testnet=constants.net.TESTNET))
+
+
+def is_payment_address(address: str) -> bool:
+    from . import bitcoin
+    return bitcoin.is_address(address) or is_spark_address(address)
+
+
 # TODO rename to parse_bip21_uri or similar
 def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
     """Raises InvalidBitcoinURI on malformed URI."""
@@ -876,7 +893,7 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
         raise InvalidBitcoinURI(f"expected string, not {repr(uri)}")
 
     if ':' not in uri:
-        if not bitcoin.is_address(uri):
+        if not is_payment_address(uri):
             raise InvalidBitcoinURI("Not a Firo address")
         return {'address': uri}
 
@@ -904,7 +921,7 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
         if address or len_out_keys != 1 or out_keys[0] != 'r':
             raise InvalidBitcoinURI(f'pay: scheme allowed only with "r" query')
     if address:
-        if not bitcoin.is_address(address):
+        if not is_payment_address(address):
             raise InvalidBitcoinURI(f"Invalid Firo address: {address}")
         out['address'] = address
     if 'amount' in out:
@@ -962,8 +979,7 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
 
 def create_bip21_uri(addr, amount_sat: Optional[int], message: Optional[str],
                      *, extra_query_params: Optional[dict] = None) -> str:
-    from . import bitcoin
-    if not bitcoin.is_address(addr):
+    if not is_payment_address(addr):
         return ""
     if extra_query_params is None:
         extra_query_params = {}

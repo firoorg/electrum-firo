@@ -28,11 +28,12 @@ import decimal
 from decimal import Decimal
 from typing import NamedTuple, Sequence, Optional, List, TYPE_CHECKING
 
+from PyQt5.QtCore import QSignalBlocker
 from PyQt5.QtWidgets import QLineEdit
 from PyQt5.QtGui import QFontMetrics, QFont
 
 from electrum_firo import bitcoin
-from electrum_firo.util import bfh, FIRO_BIP21_URI_SCHEME, PAY_BIP21_URI_SCHEME
+from electrum_firo.util import bfh, is_spark_address, FIRO_BIP21_URI_SCHEME, PAY_BIP21_URI_SCHEME
 from electrum_firo.transaction import PartialTxOutput
 from electrum_firo.bitcoin import opcodes, construct_script
 from electrum_firo.logging import Logger
@@ -72,6 +73,7 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
         self.heightMin = 0
         self.heightMax = 250
         self.c = None
+        self._recipient_text = ''
         self.textChanged.connect(self.check_text)
         self.outputs = []  # type: List[PartialTxOutput]
         self.errors = []  # type: List[PayToLineError]
@@ -140,14 +142,31 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
         except decimal.InvalidOperation:
             raise Exception("Invalid amount")
 
+    @staticmethod
+    def address_from_contact(line):
+        text = line.strip()
+        match = re.fullmatch(RE_ALIAS, text)
+        return match.group(2) if match else text
+
     def parse_address(self, line):
-        r = line.strip()
-        m = re.match('^'+RE_ALIAS+'$', r)
-        address = str(m.group(2) if m else r)
+        address = self.address_from_contact(line)
         assert bitcoin.is_address(address)
         return address
 
     def check_text(self):
+        text = self.toPlainText()
+        data = text.strip()
+        if not self.is_pr and '\n' not in data and data.lower().startswith(
+                (FIRO_BIP21_URI_SCHEME + ':', PAY_BIP21_URI_SCHEME + ':')):
+            # The link may be declined or invalid. Restore the existing draft first.
+            with QSignalBlocker(self):
+                self.setPlainText(self._recipient_text)
+            self.win.pay_to_URI(data)
+            return
+        if text != self._recipient_text and self.win.max_button.isChecked():
+            self.win.max_button.setChecked(False)
+            self.amount_edit.setAmount(None)
+        self._recipient_text = text
         self.errors = []
         self.spark_address = None
         if self.is_pr:
@@ -161,14 +180,8 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
 
         if len(lines) == 1:
             data = lines[0]
-            # try bip21 URI
-            data_l = data.lower()
-            if (data_l.startswith(FIRO_BIP21_URI_SCHEME + ':')
-                    or data_l.startswith(PAY_BIP21_URI_SCHEME + ':')):
-                self.win.pay_to_URI(data)
-                return
-            spark_addr = self._try_parse_spark_address(data)
-            if spark_addr:
+            spark_addr = self.address_from_contact(data)
+            if is_spark_address(spark_addr):
                 self.spark_address = spark_addr
                 self.win.set_onchain(True)
                 self.win.lock_amount(False)
@@ -235,22 +248,6 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
     def get_spark_address(self) -> Optional[str]:
         return self.spark_address
 
-    @staticmethod
-    def _try_parse_spark_address(text: str) -> Optional[str]:
-        addr = text.strip()
-        if not addr.lower().startswith(('sm1', 'st1')) or ',' in addr or ' ' in addr:
-            return None
-        try:
-            from electrum_firo import libsparkmobile, constants
-            if not libsparkmobile.is_available():
-                return None
-            if libsparkmobile.is_valid_spark_address(
-                    addr, is_testnet=bool(constants.net.TESTNET)):
-                return addr
-        except Exception:
-            pass
-        return None
-
     def get_outputs(self, is_max):
         if self.spark_address:
             return []
@@ -282,15 +279,6 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
         self.setMinimumHeight(int(h))
         self.setMaximumHeight(int(h))
         self.verticalScrollBar().hide()
-
-    def qr_input(self, *, callback=None):
-        def _on_qr_success(data):
-            data_l = data.lower()
-            if (data_l.startswith(FIRO_BIP21_URI_SCHEME + ':')
-                    or data_l.startswith(PAY_BIP21_URI_SCHEME + ':')):
-                self.win.pay_to_URI(data)
-                # TODO: update fee
-        super(PayToEdit, self).qr_input(callback=_on_qr_success)
 
     def resolve(self):
         self.is_alias = False
@@ -325,12 +313,10 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
         self.setText(new_url)
         self.previous_payto = new_url
 
-        #if self.win.config.get('openalias_autoadd') == 'checked':
-        self.win.contacts[key] = ('openalias', name)
-        self.win.contact_list.update()
-
         self.setFrozen(True)
         if data.get('type') == 'openalias':
+            self.win.contacts[key] = ('openalias', name)
+            self.win.contact_list.update()
             self.validated = data.get('validated')
             if self.validated:
                 self.setGreen()

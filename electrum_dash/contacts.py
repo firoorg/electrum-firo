@@ -25,9 +25,10 @@ import re
 import dns
 from dns.exception import DNSException
 
-from . import bitcoin
 from . import dnssec
-from .util import read_json_file, write_json_file, to_string
+from .i18n import _
+from .util import (FileImportFailed, has_spark_address_prefix, is_payment_address,
+                   read_json_file, write_json_file, to_string)
 from .logging import Logger
 
 
@@ -41,10 +42,12 @@ class Contacts(dict, Logger):
             self.update(d)
         except:
             return
-        # backward compatibility
-        for k, v in self.items():
+        # Legacy files keyed contacts by label. A stored Spark address can retain
+        # its label even if native validation is unavailable on this installation.
+        for k, v in list(self.items()):
             _type, n = v
-            if _type == 'address' and bitcoin.is_address(n):
+            if (_type == 'address' and not has_spark_address_prefix(k)
+                    and is_payment_address(n) and not is_payment_address(k)):
                 self.pop(k)
                 self[n] = ('address', k)
 
@@ -71,18 +74,19 @@ class Contacts(dict, Logger):
             return res
 
     def resolve(self, k):
-        if bitcoin.is_address(k):
+        if is_payment_address(k):
             return {
                 'address': k,
                 'type': 'address'
             }
-        if k in self.keys():
-            _type, addr = self[k]
-            if _type == 'address':
-                return {
-                    'address': addr,
-                    'type': 'contact'
-                }
+        if k in self and self[k][0] == 'address':
+            raise ValueError(_('Invalid contact address for this network.'))
+        matches = [address for address, (kind, name) in self.items()
+                   if kind == 'address' and name == k]
+        if matches:
+            if len(matches) != 1 or not is_payment_address(matches[0]):
+                raise ValueError(_('Select a valid contact address.'), k)
+            return {'address': matches[0], 'type': 'contact'}
         out = self.resolve_openalias(k)
         if out:
             address, name, validated = out
@@ -125,11 +129,12 @@ class Contacts(dict, Logger):
         for k, v in list(data.items()):
             if k == 'contacts':
                 return self._validate(v)
-            if not bitcoin.is_address(k):
+            if not is_payment_address(k):
+                if has_spark_address_prefix(k):
+                    raise FileImportFailed(_('Cannot validate this Spark address on this network: {}').format(k))
                 data.pop(k)
             else:
-                _type, _ = v
-                if _type != 'address':
+                if v[0] != 'address':
                     data.pop(k)
         return data
 
