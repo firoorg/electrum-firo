@@ -1941,9 +1941,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         if self._spark_send_error():
             return
         if self.send_from_private:
-            if not self.wallet.spark_enabled:
-                self.show_error(_('Spark is disabled for this session'))
-                return
             address = self._get_send_destination_address()
             if not address:
                 return
@@ -1970,9 +1967,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             return
         spark_addr = self.payto_e.get_spark_address()
         if spark_addr:
-            if not self.wallet.spark_enabled:
-                self.show_error(_('Spark is disabled for this session'))
-                return
             def make_tx(fee_est):
                 return self.wallet.prepareSparkMintTransaction(
                     spark_address=spark_addr,
@@ -2277,9 +2271,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             self.show_error(error)
             return
         if self.send_from_private:
-            if not self.wallet.spark_enabled:
-                self.show_error(_('Spark is disabled for this session'))
-                return
             if self.ps_cb.isChecked():
                 self.show_error(_('PrivateSend cannot be used with Spark spend'))
                 return
@@ -2297,9 +2288,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             return
         spark_addr = self.payto_e.get_spark_address()
         if spark_addr:
-            if not self.wallet.spark_enabled:
-                self.show_error(_('Spark is disabled for this session'))
-                return
             if self.check_send_tab_payto_line_and_show_errors():
                 return
             if self.ps_cb.isChecked():
@@ -2526,13 +2514,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                                                      external_keypairs))
 
     def pay_mintspark_dialog(self, spark_address: str, amount) -> None:
-        if not self.wallet.spark_enabled:
-            return
         if run_hook('abort_send', self):
-            return
-        from electrum_firo import libsparkmobile
-        if not libsparkmobile.is_available():
-            self.show_error(_('This installation lacks the Spark library.'))
             return
         inputs = self.get_coins()
 
@@ -2548,19 +2530,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             is_sweep=False, route=self._payment_route(spark_address, from_spark=False, to_spark=True))
         conf_dlg.submitted_draft = self.payment_draft_snapshot()
         conf_dlg.wallet_note = self.message_e.text()
-        conf_dlg.disable_preview = True
         conf_dlg.preview_button.setVisible(False)
         conf_dlg.bg_update(
             lambda x: self._conf_dlg_after_bg_update(conf_dlg, None))
 
     def pay_sparksend_dialog(self, address: str, amount) -> None:
-        if not self.wallet.spark_enabled:
-            return
         if run_hook('abort_send', self):
-            return
-        from electrum_firo import libsparkmobile
-        if not libsparkmobile.is_available():
-            self.show_error(_('This installation lacks the Spark library.'))
             return
         password = None
         if self.wallet.has_keystore_encryption():
@@ -2589,7 +2564,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         conf_dlg.password_required = False
         conf_dlg.pw_label.setVisible(False)
         conf_dlg.pw.setVisible(False)
-        conf_dlg.disable_preview = True
         conf_dlg.preview_button.setVisible(False)
         conf_dlg.bg_update(
             lambda x: self._conf_dlg_after_bg_update(conf_dlg, None))
@@ -2626,9 +2600,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         conf_dlg.bg_check_have_enough_funds_assuming_zero_fees(enough_funds_cb)
 
     def _conf_dlg_or_preview_dlg(self, conf_dlg, external_keypairs):
+        route = conf_dlg.route
+        spark_route = route and (route.from_spark or route.to_spark)
         # shortcut to advanced preview (after "enough funds" check!)
-        if (self.config.get('advanced_preview')
-                and not getattr(conf_dlg, 'disable_preview', False)):
+        if self.config.get('advanced_preview') and not spark_route:
             preview_dlg = PreviewTxDialog(
                 window=self,
                 make_tx=conf_dlg.make_tx,
@@ -2649,7 +2624,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 return
         if is_send:
             submitted_draft = None
-            if conf_dlg.route and (conf_dlg.route.from_spark or conf_dlg.route.to_spark):
+            if spark_route:
                 pr = None
                 submitted_draft = conf_dlg.submitted_draft
             else:
