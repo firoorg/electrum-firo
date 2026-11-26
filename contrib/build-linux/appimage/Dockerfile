@@ -53,7 +53,7 @@ RUN apt-get update -q && \
     add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
     add-apt-repository -y ppa:git-core/ppa && \
     apt-get update -q && \
-    apt-get install -qy g++-9 git && \
+    apt-get install -qy g++-9=9.4.0-1ubuntu1~16.04 git=1:2.47.1-0ppa1~ubuntu16.04.1 && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get autoremove -y && \
     apt-get clean
