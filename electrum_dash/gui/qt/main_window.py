@@ -2044,6 +2044,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 return
             if self.check_send_tab_payto_line_and_show_errors():
                 return
+            if len(self.payto_e.outputs) > 1:
+                self.show_error(_('Sending from the private balance '
+                                  'supports one recipient only'))
+                return
             address = self._get_send_destination_address()
             if not address:
                 self.show_error(_('Invalid Address'))
