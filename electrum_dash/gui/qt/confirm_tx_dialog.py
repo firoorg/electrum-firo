@@ -210,6 +210,7 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
 
         self.fee_slider = FeeSlider(self, self.config, self.fee_slider_callback)
         self.fee_combo = FeeComboBox(self.fee_slider)
+        self.fee_combo.setMinimumHeight(self.fee_combo.fontMetrics().height() + 12)
         if route and route.from_spark:
             self.fee_slider.hide()
             self.fee_combo.hide()
