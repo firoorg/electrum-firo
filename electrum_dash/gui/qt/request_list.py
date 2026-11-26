@@ -24,7 +24,7 @@
 # SOFTWARE.
 
 from enum import IntEnum
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
 from PyQt5.QtWidgets import QMenu, QAbstractItemView
@@ -84,12 +84,8 @@ class RequestList(MyTreeView):
                 self.selectionModel().setCurrentIndex(item, QItemSelectionModel.SelectCurrent | QItemSelectionModel.Rows)
                 break
 
-    def item_changed(self, idx: Optional[QModelIndex]):
-        if idx is None:
-            self.parent.receive_payreq_e.setText('')
-            self.parent.receive_address_e.setText('')
-            return
-        if not idx.isValid():
+    def item_changed(self, idx: QModelIndex):
+        if self.parent.receive_type_combo.currentData() or not idx.isValid():
             return
         # TODO use siblingAtColumn when min Qt version is >=5.11
         item = self.item_from_index(idx.sibling(idx.row(), self.Columns.DATE))
@@ -139,11 +135,16 @@ class RequestList(MyTreeView):
     def update(self):
         # not calling maybe_defer_update() as it interferes with conditional-visibility
         self.parent.update_receive_address_styling()
+        address = self.parent.receive_address_e.text()
+        current_request = address if self.parent.receive_payreq_e.text() else None
+        keep_request = False
         self.proxy.setDynamicSortFilter(False)  # temp. disable re-sorting after every change
         self.std_model.clear()
         self.update_headers(self.__class__.headers)
         for req in self.wallet.get_unpaid_requests():
             key = self.wallet.get_key_for_receive_request(req)
+            if key == current_request:
+                keep_request = True
             status = self.parent.wallet.get_request_status(key)
             status_str = req.get_status_str(status)
             request_type = req.type
@@ -154,7 +155,7 @@ class RequestList(MyTreeView):
             amount_str = self.parent.format_amount(amount) if amount else ""
             labels = [date, message, amount_str, status_str]
             icon = read_QIcon("firocoin.png")
-            tooltip = 'onchain request'
+            tooltip = _('Transparent payment request')
             items = [QStandardItem(e) for e in labels]
             self.set_editability(items)
             items[self.Columns.DATE].setData(request_type, ROLE_REQUEST_TYPE)
@@ -169,13 +170,16 @@ class RequestList(MyTreeView):
         # sort requests by date
         self.sortByColumn(self.Columns.DATE, Qt.DescendingOrder)
         # hide list if empty
-        if self.parent.isVisible():
-            b = self.std_model.rowCount() > 0
-            self.setVisible(b)
-            self.parent.receive_requests_label.setVisible(b)
-            if not b:
-                # list got hidden, so selected item should also be cleared:
-                self.item_changed(None)
+        spark = self.parent.receive_type_combo.currentData()
+        visible = self.std_model.rowCount() > 0 and not spark
+        self.setVisible(visible)
+        self.parent.receive_requests_label.setVisible(visible)
+        if spark:
+            return
+        if keep_request:
+            self.select_key(current_request)
+        elif current_request or not address or self.wallet.is_used(address):
+            self.parent.show_unused_receive_address()
 
     def create_menu(self, position):
         items = self.selected_in_column(0)
@@ -198,8 +202,8 @@ class RequestList(MyTreeView):
         menu = QMenu(self)
         self.add_copy_menu(menu, idx)
         URI = self.wallet.get_request_URI(req)
-        menu.addAction(_("Copy Request"), lambda: self.parent.do_copy(URI, title='Dash URI'))
-        menu.addAction(_("Copy Address"), lambda: self.parent.do_copy(req.get_address(), title='Dash Address'))
+        menu.addAction(_("Copy request"), lambda: self.parent.do_copy(URI, title=_('Firo payment request')))
+        menu.addAction(_("Copy address"), lambda: self.parent.do_copy(req.get_address(), title=_('Firo address')))
         #if 'view_url' in req:
         #    menu.addAction(_("View in web browser"), lambda: webopen(req['view_url']))
         menu.addAction(_("Delete"), lambda: self.parent.delete_requests([key]))

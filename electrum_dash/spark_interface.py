@@ -1275,6 +1275,13 @@ class SparkInterfaceMixin:
             return {}
         return _deepcopy_db_val(book)
 
+    def is_spark_receiving_address(self, address: str) -> bool:
+        address = address.lower()
+        if address == self.getCurrentReceivingSparkAddress():
+            return True
+        return any(entry.get('address') == address and entry.get('subtype', 'receiving') == 'receiving'
+                   for entry in self._spark_address_book().values())
+
     def _save_spark_address(self, diversifier: int, address: str,
                             subtype: str, *, save: bool = True) -> None:
         book = self._spark_address_book()

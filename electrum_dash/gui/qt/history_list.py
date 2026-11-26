@@ -835,6 +835,10 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         vbox = QVBoxLayout()
         msg = messages.to_rtf(messages.MSG_CAPITAL_GAINS)
         vbox.addWidget(WWLabel(msg))
+        if self.wallet.spark_enabled:
+            vbox.addWidget(WWLabel(_(
+                'Acquisition price and unrealized gains cover transparent coins. '
+                'If a Spark spend has an unknown acquisition price, realized gains for the period are unavailable.')))
         grid = QGridLayout()
         grid.addWidget(QLabel(_("Begin")), 0, 1)
         grid.addWidget(QLabel(_("End")), 0, 2)

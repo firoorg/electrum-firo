@@ -214,7 +214,11 @@ class BaseWizard(Logger):
                 ('restore_from_key', _('Use a master key')),
             ]
             if not self.is_kivy:
-                choices.append(('choose_hw_device',  _('Use a hardware device')))
+                choices.append(('choose_hw_device', _('Use a hardware device (transparent funds only)')))
+                if self.wallet_type == 'standard':
+                    message += '\n\n' + _(
+                        'New Electrum seeds and hardware wallets use transparent addresses. '
+                        'To use Spark, restore an existing BIP39 software wallet with the standard derivation path.')
         else:
             message = _('Add a cosigner to your multi-sig wallet')
             choices = [

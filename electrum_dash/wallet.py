@@ -916,11 +916,14 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
 
     def get_spark_aware_history(self, *, domain=None, group_ps=False) -> List[dict]:
         items = OrderedDictWithIndex()
+        show_tx_type = self.config.get('show_dip2_tx_type', not self.psman.unsupported)
         for tx_item in self.get_onchain_history(domain=domain, group_ps=group_ps):
             # The transaction-type column can be hidden. Spark activity still
             # belongs in History, including transparent receipts on hardware.
             txid = tx_item['txid']
-            tx_type = tx_item['tx_type'] or classify_onchain_tx_type(self.db.get_transaction(txid))
+            tx_type = tx_item['tx_type']
+            if not show_tx_type and not tx_type:
+                tx_type = classify_onchain_tx_type(self.db.get_transaction(txid))
             if tx_type in SPARK_SPEND_TYPES and tx_item['bc_value'].value > 0:
                 tx_item['spark_activity'] = _('Received from Spark at transparent address')
             elif tx_type == PSTxTypes.SPARK_MINT:

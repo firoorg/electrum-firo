@@ -167,8 +167,7 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
                     or data_l.startswith(PAY_BIP21_URI_SCHEME + ':')):
                 self.win.pay_to_URI(data)
                 return
-            spark_addr = (self._try_parse_spark_address(data)
-                          if self.win.wallet.spark_enabled else None)
+            spark_addr = self._try_parse_spark_address(data)
             if spark_addr:
                 self.spark_address = spark_addr
                 self.win.set_onchain(True)
@@ -239,7 +238,7 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
     @staticmethod
     def _try_parse_spark_address(text: str) -> Optional[str]:
         addr = text.strip()
-        if not addr or ',' in addr or ' ' in addr:
+        if not addr.lower().startswith(('sm1', 'st1')) or ',' in addr or ' ' in addr:
             return None
         try:
             from electrum_firo import libsparkmobile, constants

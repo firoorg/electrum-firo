@@ -98,6 +98,7 @@ class InvoiceList(MyTreeView):
         self.proxy.setDynamicSortFilter(False)  # temp. disable re-sorting after every change
         self.std_model.clear()
         self.update_headers(self.__class__.headers)
+        has_privatesend = False
         for idx, item in enumerate(self.parent.wallet.get_unpaid_invoices()):
             key = self.parent.wallet.get_key_for_outgoing_invoice(item)
             invoice_ext = self.parent.wallet.get_invoice_ext(key)
@@ -110,6 +111,7 @@ class InvoiceList(MyTreeView):
             amount = item.get_amount_sat()
             timestamp = item.time or 0
             ps_str = _('PrivateSend') if invoice_ext.is_ps else _('Regular')
+            has_privatesend |= bool(invoice_ext.is_ps)
             tx_type = invoice_ext.tx_type
             type_str = SPEC_TX_NAMES[tx_type]
             date_str = format_time(timestamp) if timestamp else _('Unknown')
@@ -127,6 +129,7 @@ class InvoiceList(MyTreeView):
             items[self.Columns.IS_PS].setData(ps_str, role=ROLE_SORT_ORDER)
             self.std_model.insertRow(idx, items)
         self.filter()
+        self.setColumnHidden(self.Columns.IS_PS, not has_privatesend)
         self.proxy.setDynamicSortFilter(True)
         # sort requests by date
         self.sortByColumn(self.Columns.DATE, Qt.DescendingOrder)
@@ -166,7 +169,7 @@ class InvoiceList(MyTreeView):
         menu = QMenu(self)
         self.add_copy_menu(menu, idx)
         if len(invoice.outputs) == 1:
-            menu.addAction(_("Copy Address"), lambda: self.parent.do_copy(invoice.get_address(), title='Dash Address'))
+            menu.addAction(_("Copy Address"), lambda: self.parent.do_copy(invoice.get_address(), title=_('Firo address')))
         menu.addAction(_("Details"), lambda: self.parent.show_onchain_invoice(invoice))
         status = wallet.get_invoice_status(invoice)
         if status == PR_UNPAID:
