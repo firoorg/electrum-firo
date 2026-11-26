@@ -1441,14 +1441,18 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             return
 
         encrypted = self.wallet.has_keystore_encryption()
+        notice = '\n\n' + _(
+            'Note: the server you are connected to can tell which Spark '
+            'transactions are yours, because the wallet downloads them to '
+            'verify your coins.')
         if not encrypted and not self.question(
-                _('Do you want to enable Spark for this session?')):
+                _('Do you want to enable Spark for this session?') + notice):
             return
         while True:
             password = self.password_dialog(_(
                 'Enter your wallet password to enable Spark, '
                 'or press Cancel to disable Spark for this session.'
-            )) if encrypted else None
+            ) + notice) if encrypted else None
             if encrypted and password is None:
                 return
             try:
