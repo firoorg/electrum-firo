@@ -334,7 +334,8 @@ def identify_and_recover_coin(
             'diversifier': int(data.diversifier),
             'value': int(data.value),
             'address': ctypes.string_at(data.address).decode('ascii'),
-            'memo': ctypes.string_at(data.memo).decode('utf-8'),
+            # The sender picks the memo bytes; a bad one must not hide the coin.
+            'memo': ctypes.string_at(data.memo).decode('utf-8', errors='replace'),
             'l_tag_hash': ctypes.string_at(data.lTagHash).decode('ascii'),
             'encrypted_diversifier': ctypes.string_at(
                 data.encryptedDiversifier,

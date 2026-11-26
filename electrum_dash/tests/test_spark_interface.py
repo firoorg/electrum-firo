@@ -227,6 +227,20 @@ class TestSparkWallet(TestCaseForTestnet):
         self.assertFalse(coin.get('tx_checked'))
         self.assertNotIn('55' * 32, self.wallet.get_unverified_txs())
 
+    def test_imported_spend_must_match_its_txid(self):
+        other = Transaction(_raw_tx(
+            [('44' * 32, 0)], [(MINT_SCRIPT, 7000)]))
+        claimed = '99' * 32
+        sync = _sync_for(self.wallet)
+
+        async def fetch(txids):
+            return {claimed: {'hex': other.serialize(), 'height': 0}}
+        sync._batch_fetch_transactions = fetch
+        with mock.patch.object(self.wallet, 'getSparkSpendTransactionIds',
+                               return_value=[('tag', claimed)]):
+            _run(sync._import_missing_spark_spend_transactions())
+        self.assertIsNone(self.wallet.db.get_transaction(other.txid()))
+
     def test_dropped_spend_releases_reservation(self):
         spend_txid = '66' * 32
         coin = _spark_coin('77' * 32, 5000, is_used=True,

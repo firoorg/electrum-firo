@@ -997,7 +997,11 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                     continue
             try:
                 tx = Transaction(raw)
-            except Exception:
+                if tx.txid() != txid:
+                    raise ValueError(f'server returned tx {tx.txid()}')
+            except Exception as e:
+                self.logger.warning(
+                    f'Spark: could not import spend transaction {txid}: {e!r}')
                 continue
             height = data.get('height')
             if isinstance(height, int) and height > 0:
