@@ -1743,10 +1743,12 @@ class SparkInterfaceMixin:
                 for (script, cAmount), out in zip(dummyRecipients, singleTxOutputs):
                     vout.append(PartialTxOutput(scriptpubkey=script, value=cAmount))
 
-                fee_extra = 0
+                # What this transaction pays as fee: the amount set aside for
+                # it, plus a leftover too small to come back as change.
+                nFeePaid = nFeeRet
                 if nChange > 0:
                     if nChange < dust:
-                        fee_extra = nChange
+                        nFeePaid += nChange
                     else:
                         if not changeAddress:
                             raise RuntimeError(_('No change address'))
@@ -1769,10 +1771,10 @@ class SparkInterfaceMixin:
                 if nBytes * 4 > MAX_NEW_TX_WEIGHT:
                     raise ValueError(_('Transaction too large'))
                 nBytesBuffer = 10 + 4 * len(setCoins)
-                nFeeNeeded = (SimpleConfig.estimate_fee_for_feerate(
-                    mintFeeRatePerKB, nBytes + nBytesBuffer) + fee_extra)
+                nFeeNeeded = SimpleConfig.estimate_fee_for_feerate(
+                    mintFeeRatePerKB, nBytes + nBytesBuffer)
 
-                if nFeeRet >= nFeeNeeded:
+                if nFeePaid >= nFeeNeeded:
                     for used in setCoins:
                         if used in itr:
                             itr.remove(used)
@@ -1804,7 +1806,7 @@ class SparkInterfaceMixin:
                     built_tx._outputs = list(vout)
                     built_tx.locktime = lockTime
                     built_tx.version = txVersion
-                    built_tx._spark_fee = nFeeRet
+                    built_tx._spark_fee = nFeePaid
                     built_tx.invalidate_ser_cache()
                     _verify_mint_serial_context(built_tx, serialContext)
                     break
@@ -1837,7 +1839,8 @@ class SparkInterfaceMixin:
                 break
 
         if not autoMintAll and valueToMint > 0:
-            raise ValueError(_('Failed to mint expected amounts'))
+            # The inputs ran out before the amount and its fees were covered.
+            raise NotEnoughFunds(_('Insufficient balance to create spark mint(s)'))
         if autoMintAll and not results:
             raise ValueError(_('No Spark mint transactions were created'))
         return results
