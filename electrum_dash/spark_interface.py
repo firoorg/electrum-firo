@@ -1529,34 +1529,44 @@ class SparkInterfaceMixin:
             if coin.get('is_used')]
         return FiroCacheCoordinator.getUsedCoinTxidsFor(used_tags, tags)
 
-    def estimateFeeForSpark(self, amount: int, password=None) -> int:
-        if self.is_watching_only():
-            raise RuntimeError(
-                _('Fee estimation is not supported for view only wallets'))
-        spend_amount = int(amount)
-        if spend_amount <= 0:
-            return 0
+    def estimateSparkSendAll(self, address: str,
+                             password=None) -> Tuple[int, int]:
+        """Returns what `address` receives, and the fee, when every spendable
+        Spark coin is sent to it. Only the fee is estimated: no proof is
+        built, so this is quick enough for the GUI thread."""
+        if not self.spark_enabled:
+            raise RuntimeError(_('Spark is disabled for this session'))
+        self._ensure_spark_send_supported()
         coins = self.get_spark_spendable_coins()
-        if spend_amount > sum(int(c['value']) for c in coins):
-            return 0
+        available = sum(int(c['value']) for c in coins)
+        if not available:
+            raise NotEnoughFunds(_('No spendable Spark coins found'))
+        to_spark = libsparkmobile.is_valid_spark_address(
+            address, is_testnet=bool(constants.net.TESTNET))
         key_data = self.derive_spark_key(password)
         try:
-            estimate = self._estimateFeeForSpark(key_data, spend_amount, coins)
+            fee = self._sparkSendAllFee(
+                key_data, available, _ffi_spend_coins(coins),
+                privateRecipients=int(to_spark),
+                transparentRecipients=int(not to_spark))
         finally:
             del key_data
-        return max(0, int(estimate))
+        if fee >= available:
+            raise NotEnoughFunds(_('Insufficient Spark balance'))
+        return available - fee, fee
 
-    def _estimateFeeForSpark(self, key_data: bytes, spend_amount: int,
-                             coins) -> int:
-        return _asyncSparkFeesWrapper(
+    def _sparkSendAllFee(self, key_data: bytes, amount: int, serializedCoins,
+                         *, privateRecipients: int,
+                         transparentRecipients: int) -> int:
+        return int(_asyncSparkFeesWrapper(
             privateKeyHex=key_data,
             index=self.sparkIndex,
-            sendAmount=spend_amount,
+            sendAmount=amount,
             subtractFeeFromAmount=True,
-            serializedCoins=_ffi_spend_coins(coins),
-            privateRecipientsCount=1,
-            utxoNum=0,
-            additionalTxSize=0)
+            serializedCoins=serializedCoins,
+            privateRecipientsCount=privateRecipients,
+            utxoNum=transparentRecipients,
+            additionalTxSize=0))
 
     def confirmSendSpark(self, tx: PartialTransaction) -> str:
         used = (getattr(tx, '_spark_used_tags', None)
@@ -1568,24 +1578,6 @@ class SparkInterfaceMixin:
         if sync:
             sync.trigger()
         return tx.txid()
-
-    def anonymizeAllSpark(self, password=None) -> List[PartialTransaction]:
-        if self.is_watching_only():
-            raise RuntimeError(
-                _('Anonymizing is not supported for view only wallets'))
-        spendableUtxos = list(self.get_spendable_coins())
-        for utxo in spendableUtxos:
-            self.add_input_info(utxo)
-        if not spendableUtxos:
-            raise NotEnoughFunds(_('No available UTXOs found to anonymize'))
-        total = _sum(spendableUtxos)
-        spark_addr = self.getCurrentReceivingSparkAddress()
-        mints = self._createSparkMintTransactions(
-            subtractFeeFromAmount=True,
-            autoMintAll=True,
-            availableUtxos=spendableUtxos,
-            outputs=[MutableSparkRecipient(spark_addr, total, '')])
-        return self.confirmSparkMintTransactions(mints, password)
 
     @property
     def sparkIndex(self) -> int:
@@ -2055,15 +2047,10 @@ class SparkInterfaceMixin:
 
         estimatedFee = 0
         if isSendAll:
-            estimatedFee = _asyncSparkFeesWrapper(
-                privateKeyHex=key_data,
-                index=self.sparkIndex,
-                sendAmount=txAmount,
-                subtractFeeFromAmount=True,
-                serializedCoins=serializedCoins,
-                privateRecipientsCount=len(privateSparkRecipients),
-                utxoNum=recipientCount,
-                additionalTxSize=0)
+            estimatedFee = self._sparkSendAllFee(
+                key_data, txAmount, serializedCoins,
+                privateRecipients=len(privateSparkRecipients),
+                transparentRecipients=recipientCount)
 
         transparent_outputs = []
         ffi_recipients = []

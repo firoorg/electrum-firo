@@ -1948,25 +1948,20 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 if password is None:
                     return
             try:
-                tx = self.wallet.prepareSendSpark(
-                    address=address,
-                    amount='!',
-                    password=password)
+                # Only the fee is estimated here, which is quick. The proof is
+                # built once, in the background, after Review payment.
+                send_amt, fee = self.wallet.estimateSparkSendAll(address, password)
             except NotEnoughFunds:
-                self.show_error(_('Not enough private funds'))
+                self.show_error(_('Not enough available Spark funds'))
                 return
             except Exception as e:
                 self.show_error(str(e))
                 return
             self.max_button.setChecked(True)
-            send_amt = getattr(tx, '_spark_send_amount', None)
-            fee = getattr(tx, '_spark_fee', 0) or 0
-            if send_amt is None:
-                send_amt = max(0, self.wallet.get_spark_balance().spendable - fee)
             self.amount_e.setAmount(send_amt)
             QToolTip.showText(
                 self.max_button.mapToGlobal(QPoint(0, 0)),
-                _("Mining fee: {}").format(self.format_amount_and_units(fee)))
+                _("Network fee: {}").format(self.format_amount_and_units(fee)))
             return
         spark_addr = self.payto_e.get_spark_address()
         if spark_addr:
