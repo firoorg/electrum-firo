@@ -262,7 +262,6 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
         self.spark_enabled = False
         self.spark_view_key_hex = None
         self._current_spark_address = None
-        self._spark_change_address = None
         # load addresses needs to be called before constructor for sanity checks
         db.load_addresses(self.wallet_type)
         self.keystore = None  # type: Optional[KeyStore]  # will be set by load_keystore
@@ -1529,7 +1528,6 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
         self.spark_enabled = False
         self.spark_view_key_hex = None
         self._current_spark_address = None
-        self._spark_change_address = None
 
     def clear_spark_data(self, is_rescan: bool = True) -> None:
         state = _deepcopy_db_val(self.db.get('spark_scan_state'))

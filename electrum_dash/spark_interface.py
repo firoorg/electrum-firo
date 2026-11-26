@@ -1289,21 +1289,6 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
 
 class SparkInterfaceMixin:
-    async def refreshSparkData(self):
-        sync = getattr(self, 'spark_synchronizer', None)
-        if sync:
-            await sync.refreshSparkData()
-
-    async def recoverSparkWallet(self):
-        sync = getattr(self, 'spark_synchronizer', None)
-        if sync:
-            await sync.recover_spark(is_rescan=True)
-        else:
-            await self.refreshSparkData()
-
-    def _spark_shared_cache(self) -> 'SparkSharedCache':
-        return get_spark_shared_cache(self.config)
-
     def _highest_receiving_diversifier(self) -> Optional[int]:
         change = libsparkmobile.SPARK_CHANGE_DIVERSIFIER
         divs = []
@@ -1324,7 +1309,7 @@ class SparkInterfaceMixin:
         if change_key not in book:
             return
         del book[change_key]
-        self.db.put('spark_address_book', _deepcopy_db_val(book))
+        self.db.put('spark_address_book', book)
 
     def _spark_address_book(self) -> Dict[str, dict]:
         book = self.db.get('spark_address_book')
@@ -1343,7 +1328,7 @@ class SparkInterfaceMixin:
                             subtype: str, *, save: bool = True) -> None:
         book = self._spark_address_book()
         book[str(diversifier)] = {'address': address, 'subtype': subtype}
-        self.db.put('spark_address_book', _deepcopy_db_val(book))
+        self.db.put('spark_address_book', book)
         if save:
             self.save_db()
 
@@ -1353,14 +1338,11 @@ class SparkInterfaceMixin:
         # The view key is derived again at each enable and lives in memory
         # only. Earlier versions wrote it to the wallet file: remove that copy.
         self.db.put('spark_view_key_hex', None)
-        book = self._spark_address_book()
-        if '1' not in book:
+        if '1' not in self._spark_address_book():
             self._save_spark_address(
                 1, self._generateSparkAddress(1), 'receiving', save=False)
             self.db.put('spark_current_receiving_diversifier', 1)
         self._purge_change_from_address_book()
-        self._spark_change_address = self._generateSparkAddress(
-            libsparkmobile.SPARK_CHANGE_DIVERSIFIER)
         self._current_spark_address = None
         self.getCurrentReceivingSparkAddress()
         self.save_db()
@@ -1372,23 +1354,11 @@ class SparkInterfaceMixin:
             self.spark_view_key_hex, diversifier,
             is_testnet=bool(constants.net.TESTNET))
 
-    @property
-    def sparkChangeAddress(self) -> Optional[str]:
-        cached = getattr(self, '_spark_change_address', None)
-        if cached:
-            return cached
-        if self.spark_view_key_hex:
-            self._spark_change_address = self._generateSparkAddress(
-                libsparkmobile.SPARK_CHANGE_DIVERSIFIER)
-            return self._spark_change_address
-        return None
-
     def getCurrentReceivingSparkAddress(self) -> str:
         if not self.spark_view_key_hex:
             raise RuntimeError(_('Spark key is not available'))
-        cached = getattr(self, '_current_spark_address', None)
-        if cached:
-            return cached
+        if self._current_spark_address:
+            return self._current_spark_address
         diversifier = self._highest_receiving_diversifier()
         if diversifier is None:
             diversifier = int(self.db.get('spark_current_receiving_diversifier') or 1)
@@ -1418,7 +1388,7 @@ class SparkInterfaceMixin:
         return addr
 
     def getSparkSpendTransactionIds(self) -> List[Tuple[str, str]]:
-        used_tags = self._spark_shared_cache().snapshot_used_tags()
+        used_tags = get_spark_shared_cache(self.config).snapshot_used_tags()
         tags = [
             tag for tag, coin in (self.db.get('spark_coins', {}) or {}).items()
             if coin.get('is_used')]
@@ -1437,14 +1407,10 @@ class SparkInterfaceMixin:
             raise NotEnoughFunds(_('No spendable Spark coins found'))
         to_spark = libsparkmobile.is_valid_spark_address(
             address, is_testnet=bool(constants.net.TESTNET))
-        key_data = self.derive_spark_key(password)
-        try:
-            fee = self._sparkSendAllFee(
-                key_data, available, _ffi_spend_coins(coins),
-                privateRecipients=int(to_spark),
-                transparentRecipients=int(not to_spark))
-        finally:
-            del key_data
+        fee = self._sparkSendAllFee(
+            self.derive_spark_key(password), available, _ffi_spend_coins(coins),
+            privateRecipients=int(to_spark),
+            transparentRecipients=int(not to_spark))
         if fee >= available:
             raise NotEnoughFunds(_('Insufficient Spark balance'))
         return available - fee, fee
@@ -1461,16 +1427,11 @@ class SparkInterfaceMixin:
             utxo_num=transparentRecipients,
             index=self.sparkIndex)
 
-    def confirmSendSpark(self, tx: PartialTransaction) -> str:
-        used = (getattr(tx, '_spark_used_tags', None)
-                or getattr(tx, 'usedSparkCoins', None))
-        if used:
-            self.note_spark_broadcast(tx)
-            self.mark_spark_coins_used(used, spent_txid=tx.txid())
-        sync = getattr(self, 'spark_synchronizer', None)
-        if sync:
-            sync.trigger()
-        return tx.txid()
+    def confirmSendSpark(self, tx: PartialTransaction) -> None:
+        self.note_spark_broadcast(tx)
+        self.mark_spark_coins_used(tx._spark_used_tags, spent_txid=tx.txid())
+        if self.spark_synchronizer:
+            self.spark_synchronizer.trigger()
 
     @property
     def sparkIndex(self) -> int:
@@ -1814,12 +1775,9 @@ class SparkInterfaceMixin:
         return first
 
     def confirmSparkMintTransactions(self, sparkMints: Sequence[PartialTransaction],
-                                     password=None) -> List[PartialTransaction]:
-        signed = []
+                                     password=None) -> None:
         for tx in sparkMints:
             self.sign_transaction(tx, password)
-            signed.append(tx)
-        return signed
 
     def prepareSendSpark(self, *, password=None,
                          **kwargs) -> PartialTransaction:
@@ -1828,11 +1786,7 @@ class SparkInterfaceMixin:
         self._ensure_spark_send_supported()
         if not libsparkmobile.is_available():
             raise RuntimeError('electrum_libsparkmobile is not available')
-        key_data = self.derive_spark_key(password)
-        try:
-            return self._prepareSendSpark(key_data, **kwargs)
-        finally:
-            del key_data
+        return self._prepareSendSpark(self.derive_spark_key(password), **kwargs)
 
     def _ensure_spark_send_supported(self) -> None:
         activation_height = SPARK_CHAUM_V2_START_HEIGHT.get(
