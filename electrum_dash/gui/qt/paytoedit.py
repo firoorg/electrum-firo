@@ -248,7 +248,6 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
         self.win.max_button.setChecked(is_max)
         self.outputs = outputs
         self.payto_scriptpubkey = None
-        self.spark_address = None
 
         if self.win.max_button.isChecked():
             self.win.spend_max()
@@ -266,8 +265,6 @@ class PayToEdit(CompletionTextEdit, ScanQRTextEdit, Logger):
         return self.spark_address
 
     def get_outputs(self, is_max):
-        if self.spark_address:
-            return []
         if self.payto_scriptpubkey:
             if is_max:
                 amount = '!'

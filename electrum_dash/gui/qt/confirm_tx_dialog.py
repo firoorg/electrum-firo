@@ -211,10 +211,7 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
         self.fee_slider = FeeSlider(self, self.config, self.fee_slider_callback)
         self.fee_combo = FeeComboBox(self.fee_slider)
         self.fee_combo.setMinimumHeight(self.fee_combo.fontMetrics().height() + 12)
-        if route and route.from_spark:
-            self.fee_slider.hide()
-            self.fee_combo.hide()
-        else:
+        if not (route and route.from_spark):
             grid.addWidget(HelpLabel(_("Fee rate") + ": ", self.fee_combo.help_msg), 5, 0)
             grid.addWidget(self.fee_slider, 5, 1)
             grid.addWidget(self.fee_combo, 5, 2)
@@ -326,11 +323,8 @@ class ConfirmTxDialog(TxEditor, WindowModalDialog):
         assert fee is not None
         self.fee_label.setText(self.main_window.format_amount_and_units(fee))
         batch = [tx] + list(getattr(tx, 'sparkMints', []))
-        extra_fees = 0
-        for part in batch:
-            extra = run_hook('get_tx_extra_fee', self.wallet, part)
-            if extra:
-                extra_fees += extra[1]
+        extras = (run_hook('get_tx_extra_fee', self.wallet, part) for part in batch)
+        extra_fees = sum(extra[1] for extra in extras if extra)
         self.extra_fee_label.setVisible(bool(extra_fees))
         self.extra_fee_value.setVisible(bool(extra_fees))
         self.extra_fee_value.setText(self.main_window.format_amount_and_units(extra_fees))

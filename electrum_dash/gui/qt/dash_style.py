@@ -645,10 +645,6 @@ QHeaderView::section {
     padding-right:40px;
 }
 
-QHeaderView::section:last {
-    border-right: 0;
-}
-
 
 /**********************/
 /* 7. Scroll Bar */
