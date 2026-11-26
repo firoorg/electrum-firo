@@ -430,6 +430,9 @@ class TestSparkHelpers(TestCaseForTestnet):
         forged = bytearray(ROW_BYTES)
         forged[10] ^= 1
         self.assertFalse(_tx_contains_spark_coin(tx, bytes(forged)))
+        tail = Transaction(_raw_tx(
+            [('aa' * 32, 0)], [(MINT_SCRIPT + bytes(forged), 1)]))
+        self.assertFalse(_tx_contains_spark_coin(tail, bytes(forged)))
         self.assertFalse(_tx_contains_spark_coin(tx, b'\x01' * 100))
         self.assertFalse(_tx_contains_spark_coin(tx, b''))
         plain = Transaction(_raw_tx(

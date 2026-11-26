@@ -154,8 +154,9 @@ def _tx_contains_spark_coin(tx: Transaction, serialized_coin: bytes) -> bool:
         return False
     for o in tx.outputs():
         script = o.scriptpubkey
+        # The coin must be where the node parses it: right after the opcode.
         if (script and script[0] in (OP_SPARKMINT, OP_SPARKSMINT)
-                and serialized_coin in script[1:]):
+                and script[1:1 + len(serialized_coin)] == serialized_coin):
             return True
     return False
 
