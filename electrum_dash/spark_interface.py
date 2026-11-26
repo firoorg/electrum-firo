@@ -494,6 +494,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
     def __init__(self, network: 'Network', wallet: 'AddressSynchronizer'):
         self.wallet = wallet
         self._sync_lock = asyncio.Lock()
+        self.retrying = False
         NetworkJobOnDefaultServer.__init__(self, network)
 
     def _reset(self):
@@ -556,6 +557,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
             if (self.wallet.spark_enabled
                     and self.wallet.is_up_to_date()
                     and self.wallet.spark_view_key_hex):
+                was_retrying = self.retrying
                 try:
                     await self._update_pending_spark_spends()
                     if self._recover_pending:
@@ -564,13 +566,17 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                     else:
                         await self.refreshSparkData()
                 except SparkServerMisbehaving as e:
+                    self.retrying = True
                     self.logger.warning(
                         f'Spark: disconnecting misbehaving server: {e!r}')
                     raise
                 except Exception as e:
+                    self.retrying = True
                     self.logger.info(f'Spark sync failed: {e!r}')
+                else:
+                    self.retrying = False
                 finally:
-                    if self.syncing:
+                    if self.syncing or self.retrying != was_retrying:
                         self.syncing = False
                         await self._notify_wallet_updated()
             try:
@@ -1205,6 +1211,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
             state['chain_height'] = local_height
             state['chain_tip_hash'] = tip_hash
+            state['scan_complete'] = not more_groups_pending
             state.pop('groups', None)
             state.pop('used_tags_count', None)
             if not rolled_back:

@@ -23,22 +23,20 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from PyQt5.QtCore import QSize, Qt
-from PyQt5.QtWidgets import QHBoxLayout, QWidget
+from PyQt5.QtCore import QSize
+from PyQt5.QtWidgets import QDialog, QHBoxLayout
 
 from .qrcodewidget import QRCodeWidget
 
 from electrum_firo.i18n import _
 
 
-class QR_Window(QWidget):
+class QR_Window(QDialog):
 
     def __init__(self, win):
-        QWidget.__init__(self)
-        self.win = win
+        super().__init__(win)
         self.setWindowTitle('Firo Electrum - '+_('Payment Request'))
         self.resize(QSize(560, 560).boundedTo(win.app.desktop().availableGeometry(win).size()))
-        self.setFocusPolicy(Qt.NoFocus)
         main_box = QHBoxLayout()
         self.qrw = QRCodeWidget()
         main_box.addWidget(self.qrw, 1)

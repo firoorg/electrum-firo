@@ -21,6 +21,7 @@ from .test_spark_interface import _bip39_keystore
 
 try:
     from PyQt5.QtCore import QCoreApplication, QEvent, Qt, QTimer
+    from PyQt5.QtTest import QTest
     from PyQt5.QtWidgets import QApplication, QPlainTextEdit
 except ImportError:
     QApplication = None
@@ -33,7 +34,7 @@ if QApplication is not None:
 SPARK_ADDRESS = 'st1' + 'q' * 140
 
 
-class TestSparkQt(TestCaseForTestnet):
+class SparkQtTestCase(TestCaseForTestnet):
     """Exercise Qt's real controls without a network connection or signing device."""
 
     @classmethod
@@ -90,6 +91,8 @@ class TestSparkQt(TestCaseForTestnet):
         self.addCleanup(patcher.stop)
         return result
 
+
+class TestSparkQt(SparkQtTestCase):
     def test_hardware_receives_transparent_output_of_spark_spend(self):
         window = self.open_wallet(hardware=True)
         wallet = window.wallet
@@ -119,6 +122,14 @@ class TestSparkQt(TestCaseForTestnet):
         self.assertEqual((0, value, 0), wallet.get_balance())
         self.assertEqual(0, wallet.get_spark_balance().total)
         self.assertEqual(value, wallet.get_tx_delta(tx.txid(), address))
+        wallet.db.put('stored_height', 10)
+        wallet.receive_history_callback(address, [(tx.txid(), 10)], {})
+        wallet.add_verified_tx(tx.txid(), util.TxMinedInfo(
+            height=10, txpos=1, timestamp=1700000000, header_hash='11' * 32))
+        window.update_balances()
+        self.assertEqual((value, 0, 0), wallet.get_balance())
+        self.assertIn(window.format_amount_and_units(value), window.transparent_available_label.text())
+        self.assertFalse(window.spark_available_label.isVisible())
         for show_type in (True, False):
             wallet.config.set_key('show_dip2_tx_type', show_type)
             entry, = wallet.get_spark_aware_history()
@@ -176,6 +187,56 @@ class TestSparkQt(TestCaseForTestnet):
             self.assertEqual(window.receive_address_e.text(), address)
             self.assertEqual(window.receive_qr.data, address)
             self.assertEqual(window.receive_request_form.isVisible(), not spark)
+
+    def test_request_copy_keeps_terms_and_address_copy_is_explicit(self):
+        window = self.open_wallet()
+        window.show_receive_tab()
+        window.receive_type_combo.setCurrentIndex(window.receive_type_combo.findData(False))
+        window.receive_amount_e.setAmount(2 * COIN)
+        window.receive_message_e.setText('Parts for repair')
+        with mock.patch.object(window.wallet, 'add_payment_request', side_effect=ValueError('save failed')), \
+                mock.patch.object(window, 'do_copy') as copy:
+            window.create_invoice_button.click()
+            copy.assert_not_called()
+        self.assertEqual(window.receive_amount_e.get_amount(), 2 * COIN)
+        window.create_invoice_button.click()
+        uri = window.receive_qr.data
+        self.assertEqual(util.parse_URI(uri)['amount'], 2 * COIN)
+        self.assertEqual(util.parse_URI(uri)['message'], 'Parts for repair')
+        clipboard = window.app.clipboard()
+        self.assertEqual(clipboard.text(), uri)
+        self.assertEqual(window.copy_receive_button.text(), 'Copy payment request')
+        window.copy_address_button.click()
+        self.assertEqual(clipboard.text(), window.receive_address_e.text())
+        window.copy_receive_button.click()
+        self.assertEqual(clipboard.text(), uri)
+        window.receive_type_combo.setCurrentIndex(window.receive_type_combo.findData(True))
+        self.assertFalse(window.copy_address_button.isVisible())
+        window.copy_receive_button.click()
+        self.assertEqual(clipboard.text(), SPARK_ADDRESS)
+
+    def test_compact_receive_keeps_qr_and_balance_details_accessible(self):
+        window = self.open_wallet()
+        window.wallet.get_spark_balance.return_value = SparkBalance(12 * COIN, 10 * COIN, 2 * COIN, 0)
+        window.wallet.db.put('spark_scan_state', {'chain_height': 10, 'scan_complete': True})
+        window.update_balances()
+        window.resize(640, 400)
+        window.show_receive_tab()
+        self.app.processEvents()
+        self.assertTrue(window.balance_details_button.isVisible())
+        self.assertFalse(window.spark_detail_label.isVisible())
+        window.balance_details_button.click()
+        self.assertIn('pending', window.show_message.call_args.args[0])
+        self.assertLessEqual(window.receive_qr.height(), window.receive_tab.viewport().height())
+        self.assertTrue(window.enlarge_qr_button.focusPolicy() & Qt.TabFocus)
+        QTest.keyClick(window.enlarge_qr_button, Qt.Key_Space)
+        self.assertTrue(window.qr_window.isVisible())
+        self.assertEqual(window.qr_window.qrw.data, SPARK_ADDRESS)
+        QTest.keyClick(window.qr_window, Qt.Key_Escape)
+        self.assertFalse(window.qr_window.isVisible())
+        self.assertEqual(window.amount_e.accessibleName(), 'Amount')
+        self.assertEqual(window.message_e.accessibleName(), 'Wallet note')
+        self.assertEqual(window.payto_e.accessibleName(), 'Pay to')
 
     def test_refresh_updates_only_the_default_transparent_receiving_address(self):
         window = self.open_wallet()
@@ -248,7 +309,7 @@ class TestSparkQt(TestCaseForTestnet):
         window.wallet.spark_enabled = True
         window.update_balances()
         self.assertIn('sync', window.spark_available_label.text().lower())
-        window.wallet.db.put('spark_scan_state', {'chain_height': 100})
+        window.wallet.db.put('spark_scan_state', {'chain_height': 100, 'scan_complete': True})
         window.update_balances()
         self.assertIn(window.format_amount_and_units(0), window.spark_available_label.text())
 

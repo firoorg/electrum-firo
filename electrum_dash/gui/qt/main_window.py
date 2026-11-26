@@ -1209,8 +1209,42 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         self.move_to_spark_button = QPushButton(_('Move to Spark'))
         self.move_to_spark_button.clicked.connect(self.move_to_spark)
         grid.addWidget(self.move_to_spark_button, 1, 3)
+        self.balance_details_button = QPushButton(_('Details'))
+        self.balance_details_button.setAccessibleName(_('Balance details'))
+        self.balance_details_button.clicked.connect(self.show_balance_details)
+        grid.addWidget(self.balance_details_button, 0, 2, 2, 1, Qt.AlignRight)
         self.update_balances()
         return panel
+
+    def show_balance_details(self):
+        rows = []
+        for name, amount, detail in (
+                (self.spark_balance_name, self.spark_available_label, self.spark_detail_label),
+                (self.transparent_balance_name, self.transparent_available_label, self.transparent_detail_label)):
+            if not name.isHidden():
+                rows.append('\n'.join(filter(None, (name.text(), amount.text(), detail.text()))))
+        self.show_message('\n\n'.join(rows), title=_('Balance details'))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'balance_details_button'):
+            self.update_balance_layout()
+
+    def update_balance_layout(self):
+        compact = self.width() < self.fontMetrics().averageCharWidth() * 90
+        self.spark_available_label.setWordWrap(compact)
+        self.transparent_available_label.setWordWrap(compact)
+        grid = self.balance_details_button.parentWidget().layout()
+        grid.setColumnStretch(1, int(compact))
+        grid.setColumnStretch(2, int(not compact))
+        has_spark_detail = not self.spark_balance_name.isHidden() and bool(self.spark_detail_label.text())
+        has_transparent_detail = bool(self.transparent_detail_label.text())
+        self.spark_detail_label.setVisible(has_spark_detail and not compact)
+        self.transparent_detail_label.setVisible(has_transparent_detail and not compact)
+        self.balance_details_button.setVisible(compact and (has_spark_detail or has_transparent_detail))
+        qr_size = 140 if self.height() < 480 else 186
+        if self.receive_qr.width() != qr_size:
+            self.receive_qr.setFixedSize(qr_size, qr_size)
 
     def update_balances(self):
         from electrum_firo import libsparkmobile
@@ -1226,15 +1260,22 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             if enabled:
                 spark = wallet.get_spark_balance()
                 sync = wallet.spark_synchronizer
-                if not spark.total and 'chain_height' not in (wallet.db.get('spark_scan_state') or {}):
-                    amount = _('Waiting for Spark sync')
-                else:
+                scan_status = wallet.get_spark_scan_status()
+                if scan_status == 'complete':
                     amount = _('{} available').format(self.format_amount_and_units(spark.spendable))
-                    if spark.pending_spendable:
-                        detail = _('{} pending · {} total').format(
-                            self.config.format_amount_and_units(spark.pending_spendable),
-                            self.config.format_amount_and_units(spark.total))
-                if sync and sync.syncing:
+                elif scan_status == 'retrying':
+                    amount = _('Retrying Spark sync')
+                elif spark.total:
+                    amount = _('{} found so far').format(self.format_amount_and_units(spark.total))
+                elif scan_status == 'partial':
+                    amount = _('Spark scan incomplete')
+                else:
+                    amount = _('Waiting for Spark sync')
+                if spark.pending_spendable:
+                    detail = _('{} pending · {} total').format(
+                        self.config.format_amount_and_units(spark.pending_spendable),
+                        self.config.format_amount_and_units(spark.total))
+                if sync and sync.syncing and scan_status != 'retrying':
                     detail = ' · '.join(filter(None, [detail, _('Syncing')]))
             elif not libsparkmobile.is_available():
                 amount = _('Spark library unavailable')
@@ -1261,6 +1302,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
             details.append(_('{} total').format(self.config.format_amount_and_units(total)))
         self.transparent_detail_label.setText(' · '.join(details))
         self.move_to_spark_button.setEnabled(available > 0)
+        self.update_balance_layout()
 
     def move_to_spark(self):
         if not self.wallet.spark_enabled:
@@ -1402,16 +1444,16 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
         self.receive_payreq_e = ButtonsTextEdit()
         self.receive_payreq_e.setFont(QFont(MONOSPACE_FONT))
-        self.receive_payreq_e.addCopyButton(self.app)
         self.receive_payreq_e.setMaximumHeight(65)
         self.receive_payreq_e.setReadOnly(True)
         self.receive_payreq_e.textChanged.connect(self.update_receive_qr)
         self.receive_payreq_e.setFocusPolicy(Qt.ClickFocus)
 
         self.receive_qr = QRCodeWidget(fixedSize=186)
-        self.receive_qr.mouseReleaseEvent = lambda x: self.toggle_qr_window()
-        self.receive_qr.enterEvent = lambda x: self.app.setOverrideCursor(QCursor(Qt.PointingHandCursor))
-        self.receive_qr.leaveEvent = lambda x: self.app.setOverrideCursor(QCursor(Qt.ArrowCursor))
+        self.receive_qr.setCursor(Qt.PointingHandCursor)
+        self.receive_qr.mouseReleaseEvent = lambda event: self.show_receive_qr_window()
+        self.enlarge_qr_button = QPushButton(_('Enlarge QR code'))
+        self.enlarge_qr_button.clicked.connect(self.show_receive_qr_window)
 
         self.receive_address_e = ButtonsTextEdit()
         self.receive_address_e.setFont(QFont(MONOSPACE_FONT))
@@ -1431,7 +1473,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
         self.copy_receive_button = QPushButton(_('Copy address'))
         self.copy_receive_button.setObjectName('primary_action')
-        self.copy_receive_button.clicked.connect(
+        self.copy_receive_button.clicked.connect(self.copy_receive_destination)
+        self.copy_address_button = QPushButton(_('Copy address'))
+        self.copy_address_button.clicked.connect(
             lambda: self.do_copy(self.receive_address_e.text(), title=_('Address')))
         self.new_spark_address_button = QPushButton(_('New Spark address'))
         self.new_spark_address_button.clicked.connect(self.create_spark_address)
@@ -1462,6 +1506,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         address_box.addWidget(self.receive_address_e)
         address_buttons = QHBoxLayout()
         address_buttons.addWidget(self.copy_receive_button)
+        address_buttons.addWidget(self.copy_address_button)
         address_buttons.addWidget(self.new_spark_address_button)
         address_buttons.addStretch()
         address_box.addLayout(address_buttons)
@@ -1469,7 +1514,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         address_box.addWidget(self.receive_payreq_e)
         address_box.addStretch()
         hbox.addLayout(address_box, 1)
-        hbox.addWidget(self.receive_qr, 0, Qt.AlignTop)
+        qr_box = QVBoxLayout()
+        qr_box.addWidget(self.receive_qr, 0, Qt.AlignHCenter)
+        qr_box.addWidget(self.enlarge_qr_button, 0, Qt.AlignHCenter)
+        qr_box.addStretch()
+        hbox.addLayout(qr_box)
         vbox.addLayout(hbox)
         vbox.addWidget(self.receive_request_form)
         vbox.addStretch(1)
@@ -1524,11 +1573,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         # clear request fields
         self.receive_amount_e.setText('')
         self.receive_message_e.setText('')
-        # copy to clipboard
-        r = self.wallet.get_request(key)
-        content = r.get_address()
-        title = _('Address')
-        self.do_copy(content, title=title)
+        self.do_copy(self.wallet.get_request_URI(self.wallet.get_request(key)), title=_('Payment request'))
 
     def init_spark_session(self):
         from electrum_firo import libsparkmobile
@@ -1642,6 +1687,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         show = bool(self.receive_payreq_e.text()) and not self.receive_type_combo.currentData()
         self.receive_request_label.setVisible(show)
         self.receive_payreq_e.setVisible(show)
+        self.copy_receive_button.setText(_('Copy payment request') if show else _('Copy address'))
+        self.copy_address_button.setVisible(show)
+
+    def copy_receive_destination(self):
+        uri = self.receive_payreq_e.text()
+        self.do_copy(uri or self.receive_address_e.text(), title=_('Payment request') if uri else _('Address'))
 
     def create_spark_address(self):
         if not self.wallet.spark_enabled:
@@ -1676,8 +1727,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         except Exception as e:
             self.logger.exception('Error adding payment request')
             self.show_error(_('Error adding payment request') + ':\n' + repr(e))
-        else:
-            self.sign_payment_request(addr)
+            return None
+        self.sign_payment_request(addr)
         return addr
 
     def do_copy(self, content: str, *, title: str = None) -> None:
@@ -1697,19 +1748,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         if not self.receive_type_combo.currentData():
             self.show_unused_receive_address()
 
-    def toggle_qr_window(self):
+    def show_receive_qr_window(self):
         from . import qrwindow
         if not self.qr_window:
             self.qr_window = qrwindow.QR_Window(self)
-            self.qr_window.setVisible(True)
-            self.qr_window_geometry = self.qr_window.geometry()
-        else:
-            if not self.qr_window.isVisible():
-                self.qr_window.setVisible(True)
-                self.qr_window.setGeometry(self.qr_window_geometry)
-            else:
-                self.qr_window_geometry = self.qr_window.geometry()
-                self.qr_window.setVisible(False)
+        self.qr_window.show()
+        self.qr_window.raise_()
+        self.qr_window.activateWindow()
         self.update_receive_qr()
 
     def show_send_tab(self):
@@ -1722,6 +1767,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         address = self.receive_address_e.text()
         uri = self.receive_payreq_e.text() or address
         self.copy_receive_button.setEnabled(bool(address))
+        self.enlarge_qr_button.setEnabled(bool(uri))
         self.receive_qr.setData(uri)
         if self.qr_window and self.qr_window.isVisible():
             self.qr_window.qrw.setData(uri)
@@ -1757,6 +1803,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         msg = _('Recipient of the funds.') + '\n\n'\
               + _('You may enter a Firo address, a label from your list of contacts (a list of completions will be proposed), or an alias (email-like address that forwards to a Firo address)')
         payto_label = HelpLabel(_('Pay to'), msg)
+        payto_label.setBuddy(self.payto_e)
+        self.payto_e.setAccessibleName(_('Pay to'))
         grid.addWidget(payto_label, 1, 0)
         grid.addWidget(self.payto_e, 1, 1, 1, -1)
 
@@ -1768,9 +1816,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         description_label = HelpLabel(_('Wallet note'), _('Stored in your wallet for your transaction history.'))
         grid.addWidget(description_label, 2, 0)
         self.message_e = SizedFreezableLineEdit(width=700)
+        description_label.setBuddy(self.message_e)
+        self.message_e.setAccessibleName(_('Wallet note'))
         grid.addWidget(self.message_e, 2, 1, 1, -1)
 
-        grid.addWidget(QLabel(_('Pay from')), 3, 0)
+        source_label = QLabel(_('Pay from'))
+        grid.addWidget(source_label, 3, 0)
 
         self.ps_cb = QCheckBox(_('PrivateSend'))
         self.ps_cb.stateChanged.connect(self.on_ps_cb)
@@ -1779,6 +1830,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
 
         self.send_from_private = False
         self.send_source_combo = QComboBox()
+        source_label.setBuddy(self.send_source_combo)
         self.send_source_combo.setAccessibleName(_('Pay from'))
         self.send_source_combo.addItem(_('Spark (private)'), True)
         self.send_source_combo.addItem(_('Transparent'), False)
@@ -1789,6 +1841,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         grid.addWidget(QLabel(_('Available')), 3, 2)
 
         self.av_amnt = BTCAmountEdit(self.get_decimal_point)
+        self.av_amnt.setAccessibleName(_('Available'))
         self.av_amnt.setEnabled(False)
         self.av_amnt.setVisible(True)
         grid.addWidget(self.av_amnt, 3, 3)
@@ -1798,6 +1851,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
               + _('Note that if you have frozen some of your addresses, the available funds will be lower than your total balance.') + '\n\n' \
               + _('Keyboard shortcut: type "!" to send all your coins.')
         amount_label = HelpLabel(_('Amount'), msg)
+        amount_label.setBuddy(self.amount_e)
+        self.amount_e.setAccessibleName(_('Amount'))
         grid.addWidget(amount_label, 4, 0)
         grid.addWidget(self.amount_e, 4, 1)
 
@@ -2343,35 +2398,19 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
         if self.tabs.currentIndex() != self.tabs.indexOf(self.send_tab):
             return
         wallet = self.wallet
+        self.av_amnt.setToolTip(_('Spendable funds before the network fee.'))
         if self.send_from_private and wallet.spark_enabled:
-            self.av_amnt.setAmount(wallet.get_spark_balance().spendable)
+            scan_status = wallet.get_spark_scan_status()
+            if scan_status == 'complete':
+                self.av_amnt.setAmount(wallet.get_spark_balance().spendable)
+            else:
+                self.av_amnt.setAmount(None)
+                self.av_amnt.setPlaceholderText(_('Retrying Spark sync') if scan_status == 'retrying' else _('Spark scan incomplete'))
             return
-        psman = wallet.psman
-        is_ps = self.ps_cb.isChecked()
-        min_rounds = None if not is_ps else psman.mix_rounds
-        no_ps_data = psman.is_hw_ks and not psman.enabled
-        tx_type, extra_payload = self.extra_payload.get_extra_data()
+        min_rounds = wallet.psman.mix_rounds if self.ps_cb.isChecked() else None
         inputs = self.get_coins(nonlocal_only=nonlocal_only,
                                 min_rounds=min_rounds)
-        if inputs:
-            addr = self.wallet.dummy_address()
-            outputs = [PartialTxOutput.from_address_and_value(addr, value='!')]
-            try:
-                tx = wallet.make_unsigned_transaction(coins=inputs,
-                                                      outputs=outputs,
-                                                      no_ps_data=no_ps_data,
-                                                      min_rounds=min_rounds,
-                                                      tx_type=tx_type,
-                                                      extra_payload=extra_payload)
-                amount = tx.output_value()
-                extra_fee = run_hook('get_tx_extra_fee', wallet, tx)
-                if extra_fee:
-                    amount -= extra_fee[1]
-            except Exception:
-                amount = 0
-        else:
-            amount = 0
-        self.av_amnt.setAmount(amount)
+        self.av_amnt.setAmount(sum(coin.value_sats() for coin in inputs))
 
     def set_ps_cb_from_coins(self, coins):
         self.update_send_route()

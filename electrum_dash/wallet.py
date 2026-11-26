@@ -930,7 +930,7 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
                 tx_item['spark_activity'] = _('Transparent to Spark')
             tx_item['_spark_delta'] = 0
             items[txid] = tx_item
-        if self.spark_enabled:
+        if self.spark_enabled and domain is None:
             self._add_spark_history_items(items)
         out = sorted(
             items.values(),
@@ -1547,6 +1547,7 @@ class Abstract_Wallet(AddressSynchronizer, SparkInterfaceMixin, ABC):
         state.pop('used_tags_count', None)
         state.pop('chain_height', None)
         state.pop('chain_tip_hash', None)
+        state.pop('scan_complete', None)
         self.db.put('spark_scan_state', state)
         if is_rescan:
             self.db.put('spark_coins', {})

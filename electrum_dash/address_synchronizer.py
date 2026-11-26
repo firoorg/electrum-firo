@@ -553,11 +553,14 @@ class AddressSynchronizer(Logger):
 
     @profiler
     def populate_tx_deltas_cache(self):
-        for addr in self.get_addresses() + self.psman.get_addresses():
-            h = self.get_address_history(addr)
-            for tx_hash, height, islock in h:
-                delta = self.get_tx_delta(tx_hash, addr)
-                self._tx_deltas_cache[tx_hash] += delta
+        self._tx_deltas_cache = self._get_address_deltas(self.get_addresses() + self.psman.get_addresses())
+
+    def _get_address_deltas(self, addresses):
+        deltas = defaultdict(int)
+        for addr in set(addresses):
+            for tx_hash, _, _ in self.get_address_history(addr):
+                deltas[tx_hash] += self.get_tx_delta(tx_hash, addr)
+        return deltas
 
     def update_tx_deltas_cache_on_tx(self, txid, tx, *, is_added):
         self._tx_deltas_cache.pop(txid, None)
@@ -670,16 +673,15 @@ class AddressSynchronizer(Logger):
     @with_local_height_cached
     @profiler
     def get_history(self, *, domain=None, config=None, group_ps=False) -> Sequence[HistoryItem]:
-        # get domain
+        # The cache contains wallet-wide net values, including transfers between
+        # two owned addresses. A scoped history needs each address's own delta.
         if domain is None:
-            domain = self.get_addresses()
-            domain += self.psman.get_addresses()
-        domain = set(domain)
-        # 1. Get the history of each address in the domain, maintain the
-        #    delta of a tx as the sum of its deltas on domain addresses
-        if not self._tx_deltas_cache:
-            self.populate_tx_deltas_cache()
-        tx_deltas = self._tx_deltas_cache
+            if not self._tx_deltas_cache:
+                self.populate_tx_deltas_cache()
+            tx_deltas = self._tx_deltas_cache
+        else:
+            domain = set(domain)
+            tx_deltas = self._get_address_deltas(domain)
         # 2. create sorted history
         history = []
         for tx_hash in tx_deltas:
@@ -1230,6 +1232,16 @@ class AddressSynchronizer(Logger):
             uu += u
             xx += x
         return cc, uu, xx
+
+    def get_spark_scan_status(self) -> str:
+        if self.spark_synchronizer and self.spark_synchronizer.retrying:
+            return 'retrying'
+        state = self.db.get('spark_scan_state') or {}
+        if state.get('scan_complete') is True:
+            return 'complete'
+        # Older wallets recorded a height after every batch, including partial
+        # scans. Only a successful final batch establishes a complete balance.
+        return 'partial' if 'chain_height' in state else 'waiting'
 
     def get_spark_balance(self) -> SparkBalance:
         if not self.spark_enabled:
