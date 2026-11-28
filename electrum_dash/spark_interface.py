@@ -5,6 +5,7 @@ import os
 import random
 import shutil
 import threading
+import time
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 from aiorpcx import RPCError, run_in_thread
@@ -32,6 +33,8 @@ MAX_NEW_TX_WEIGHT = 1_000_000
 OP_SPARKSMINT = 0xd2
 MINT_INPUT_SEQUENCE = 0xffffffff - 1
 SPEND_MISSING_CHECKS_BEFORE_RELEASE = 3
+# A server we have just switched to may not have the spend in its mempool yet.
+SPEND_MISSING_SECONDS_BEFORE_RELEASE = 600
 MAX_SPARK_SET_SIZE = 32_768
 # Mainnet had 11 groups in November 2026. The cap bounds how many full sets a
 # server can make the wallet download and store.
@@ -709,7 +712,8 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         return rows, mempool_txids_hex
 
     async def runFetchAndUpdateSparkAnonSetCacheForGroupId(
-            self, groupId, anon_sets, groups, discarded=None):
+            self, groupId, anon_sets, groups, discarded=None) -> bool:
+        """Returns False if the cache was kept because the server is behind it."""
         meta = await self._request(
             'spark.getsparkanonymitysetmeta', (str(groupId),))
         blockHash, setHash, size = _parse_set_meta(meta)
@@ -726,7 +730,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 self.logger.info(
                     f'Spark group {groupId}: server is at height {height}, '
                     f'behind the cached set; keeping the cache')
-                return
+                return False
         # Nothing ties the cached set to the chain. A set only grows, and has
         # one size and hash per block: where this server says otherwise, we
         # cannot tell which of the two is wrong, so the group is fetched again.
@@ -751,7 +755,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
         }
         if (prevMeta and prevMeta['blockHash'] == blockHash
                 and cache_version == SPARK_SET_CACHE_VERSION):
-            return
+            return True
 
         rebuild = prevMeta is not None and (
             cache_version != SPARK_SET_CACHE_VERSION or size == prevSize)
@@ -791,6 +795,7 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                 'epoch': (os.urandom(8).hex() if whole
                           else entry.get('epoch', '')),
             }
+        return True
 
     async def _fetch_used_tags(self, start: int) -> List[Tuple[str, str]]:
         """The server's used tags from position `start`, as (tag hash, txid)."""
@@ -898,9 +903,14 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
 
     def _maybe_release_dropped_spend(self, txid: str,
                                      canonical_tags: dict) -> bool:
-        count = self._missing_spend_checks.get(txid, 0) + 1
-        self._missing_spend_checks[txid] = count
-        if count < SPEND_MISSING_CHECKS_BEFORE_RELEASE:
+        # Counted per server: _reset() forgets both when the server changes.
+        count, first_missing = self._missing_spend_checks.get(
+            txid, (0, time.monotonic()))
+        count += 1
+        self._missing_spend_checks[txid] = (count, first_missing)
+        if (count < SPEND_MISSING_CHECKS_BEFORE_RELEASE
+                or time.monotonic() - first_missing
+                < SPEND_MISSING_SECONDS_BEFORE_RELEASE):
             return False
         coins = self.wallet.db.get('spark_coins') or {}
         tags = [tag for tag, c in coins.items()
@@ -1145,15 +1155,26 @@ class SparkSynchronizer(NetworkJobOnDefaultServer):
                     anon_sets.pop(str(gid), None)
                     groups.pop(str(gid), None)
 
+            # A group keeps growing until the next one opens. A cached group
+            # is left alone only once it was checked after that: otherwise the
+            # coins it got between our last refresh and its end are missed.
             groupIds = [groupId for groupId in range(1, latestGroupId)
-                        if str(groupId) not in anon_sets]
+                        if not (anon_sets.get(str(groupId)) or {}).get('closed')]
             more_groups_pending = len(groupIds) >= MAX_SPARK_GROUPS_PER_REFRESH
             groupIds = groupIds[:MAX_SPARK_GROUPS_PER_REFRESH - 1]
             groupIds.append(latestGroupId)
 
             for groupId in groupIds:
-                await self.runFetchAndUpdateSparkAnonSetCacheForGroupId(
+                in_sync = await self.runFetchAndUpdateSparkAnonSetCacheForGroupId(
                     groupId, anon_sets, groups, discarded)
+                entry = anon_sets.get(str(groupId))
+                if not entry:
+                    continue
+                if groupId == latestGroupId:
+                    # An earlier server may have named a later group.
+                    entry.pop('closed', None)
+                elif in_sync:
+                    entry['closed'] = True
 
             await self._anchor_cached_sets(anon_sets)
             tags_restarted = await self.runFetchAndUpdateSparkUsedCoinTags(
