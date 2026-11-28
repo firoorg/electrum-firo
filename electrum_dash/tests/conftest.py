@@ -11,12 +11,18 @@ _here = os.path.dirname(__file__)
 # test_dash_tx imports Dash special-tx types (SPEC_SUB_TX_*) that Firo removed.
 collect_ignore = ['test_dash_tx.py']
 
+# Format: one node id per line, optionally followed by "  # reason".
+KNOWN_FAILURES = {}
 with open(os.path.join(_here, 'known_failures.txt')) as f:
-    KNOWN_FAILURES = {line.strip() for line in f if line.strip()}
+    for line in f:
+        nodeid, _, reason = line.partition('#')
+        if nodeid.strip():
+            KNOWN_FAILURES[nodeid.strip()] = (
+                reason.strip() or 'Dash test vectors not yet ported to Firo')
 
 
 def pytest_collection_modifyitems(items):
     for item in items:
-        if item.nodeid.split('tests/', 1)[-1] in KNOWN_FAILURES:
-            item.add_marker(pytest.mark.xfail(
-                reason='Dash test vectors not yet ported to Firo', strict=False))
+        reason = KNOWN_FAILURES.get(item.nodeid.split('tests/', 1)[-1])
+        if reason:
+            item.add_marker(pytest.mark.xfail(reason=reason, strict=False))

@@ -20,8 +20,8 @@ test_blockchain.py::TestBlockchain::test_forking_and_swapping
 test_blockchain.py::TestBlockchain::test_get_chains_that_contain_header
 test_blockchain.py::TestBlockchain::test_get_height_of_last_common_block_with_chain
 test_blockchain.py::TestBlockchain::test_parents_after_forking
-test_blockchain.py::TestVerifyHeader::test_insufficient_pow
-test_blockchain.py::TestVerifyHeader::test_target_mismatch
+test_blockchain.py::TestVerifyHeader::test_insufficient_pow  # verify_header skips target/PoW checks (blockchain.py "or True"); a real gap, not a vector mismatch
+test_blockchain.py::TestVerifyHeader::test_target_mismatch  # verify_header skips target/PoW checks (blockchain.py "or True"); a real gap, not a vector mismatch
 test_commands.py::TestCommands::test_encrypt_decrypt
 test_commands.py::TestCommands::test_export_private_key_deterministic
 test_commands.py::TestCommands::test_export_private_key_imported
