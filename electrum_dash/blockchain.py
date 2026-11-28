@@ -726,27 +726,6 @@ class Blockchain(Logger):
             cp.append((h, target))
         return cp
 
-    def store_raw_header(self, header:bytes, height:int):
-        file_name = os.path.join(self.raw_dir, str(height))
-        with open(file_name, 'wb+') as f:
-            f.write(header)
-            f.close()
-
-    def get_hash_raw_header(self, height: int):
-        if height == -1:
-            return '0000000000000000000000000000000000000000000000000000000000000000'
-        elif height == 0:
-            return bitcoin.NetworkConstants.GENESIS
-        else:
-            file_name = os.path.join(self.raw_dir, str(height))
-            if not os.path.isfile(file_name):
-                raise "Raw file header for {} not found".format(height)
-
-            raw_header = bytes()
-            with open(file_name, 'rb+') as f:
-                raw_header = f.read()
-            return hash_encode(Hash(raw_header))
-
 
 def check_header(header: dict) -> Optional[Blockchain]:
     """Returns any Blockchain that contains header, or None."""
