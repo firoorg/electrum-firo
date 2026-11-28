@@ -15,6 +15,7 @@ from electrum_firo.spark_interface import (
     OP_SPARKMINT,
     SPARK_CHAUM_V2_START_HEIGHT,
     SPARK_SET_CACHE_VERSION, SPEND_MISSING_CHECKS_BEFORE_RELEASE,
+    SPEND_MISSING_SECONDS_BEFORE_RELEASE,
     SparkServerMisbehaving,
     SparkSharedCache, SparkSynchronizer, _is_tx_not_found_error,
     _parse_group_id, _parse_set_meta, _tx_contains_spark_coin,
@@ -333,10 +334,15 @@ class TestSparkWallet(TestCaseForTestnet):
         self.wallet.db.put('spark_scan_state',
                            {'pending_spark_spends': [spend_txid]})
         sync = _sync_for(self.wallet)
-        for _ in range(SPEND_MISSING_CHECKS_BEFORE_RELEASE - 1):
-            self.assertFalse(sync._maybe_release_dropped_spend(spend_txid, {}))
-        self.assertTrue(self.wallet.db.get('spark_coins')['mine']['is_used'])
-        self.assertTrue(sync._maybe_release_dropped_spend(spend_txid, {}))
+        clock = mock.patch('electrum_firo.spark_interface.time.monotonic',
+                           return_value=1000.0)
+        with clock as now:
+            # Neither enough checks nor enough time alone releases the coins.
+            for _ in range(SPEND_MISSING_CHECKS_BEFORE_RELEASE + 2):
+                self.assertFalse(sync._maybe_release_dropped_spend(spend_txid, {}))
+            self.assertTrue(self.wallet.db.get('spark_coins')['mine']['is_used'])
+            now.return_value += SPEND_MISSING_SECONDS_BEFORE_RELEASE
+            self.assertTrue(sync._maybe_release_dropped_spend(spend_txid, {}))
         released = self.wallet.db.get('spark_coins')['mine']
         self.assertFalse(released['is_used'])
         self.assertNotIn('spent_txid', released)
@@ -861,6 +867,52 @@ class TestSparkRefresh(TestCaseForTestnet):
         self.assertEqual(([], False), refresh())
         # The server sends the same row again: asking once more would not help.
         self.assertEqual((['1'], True), refresh())
+
+    def test_group_is_refreshed_once_more_after_the_next_one_opens(self):
+        txid = base64.b64encode(b'\x04' * 32).decode()
+        later_block = base64.b64encode(b'\x05' * 32).decode()
+        # Newest first, as the server sends them.
+        sets = {1: (self.BLOCK, [['coin-1', txid, 'context']])}
+        wallet, shared, sync = self.server([])
+        asked = []
+
+        async def request(method, params=(), timeout=120):
+            if method == 'spark.getsparklatestcoinid':
+                return max(sets)
+            if method == 'spark.getsparkanonymitysetmeta':
+                asked.append(int(params[0]))
+                block, rows = sets[int(params[0])]
+                return {'blockHash': block, 'setHash': self.SET_HASH, 'size': len(rows)}
+            if method == 'spark.getusedcoinstagstxhashes':
+                return {'tagsandtxids': []}
+            if method == 'spark.getmempoolsparktxids':
+                return []
+            raise AssertionError(method)
+
+        async def fetch_sectors(group_id, block_hash, count, start_index=0):
+            return sets[group_id][1][start_index:start_index + count]
+
+        sync._request = request
+        sync._fetch_sectors = fetch_sectors
+        self.refresh(sync)
+        self.assertNotIn('closed', shared.snapshot_anon_sets()['1'])
+
+        # While the wallet was away, group 1 got one more coin and group 2 opened.
+        sets[1] = (later_block, [['coin-2', txid, 'context']] + sets[1][1])
+        sets[2] = (later_block, [['coin-3', txid, 'context']])
+        self.refresh(sync)
+        cached = shared.snapshot_anon_sets()
+        self.assertEqual(2, cached['1']['size'])
+        self.assertEqual(
+            ['coin-2', 'coin-1'],
+            [row[0] for row in FiroCacheCoordinator.getSetCoinsForGroupId(cached, 1)])
+        self.assertTrue(cached['1']['closed'])
+        self.assertNotIn('closed', cached['2'])
+
+        # A closed group is final: it is not asked about again.
+        del asked[:]
+        self.refresh(sync)
+        self.assertEqual([2], asked)
 
 
 class TestSparkRescanState(TestCaseForTestnet):
