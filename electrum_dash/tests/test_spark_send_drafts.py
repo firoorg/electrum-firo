@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from electrum_firo.bitcoin import COIN
-from electrum_firo.network import BestEffortRequestFailed
+from electrum_firo.network import BestEffortRequestFailed, TxBroadcastServerReturnedError
 from electrum_firo.spark_interface import OP_SPARKMINT
 from electrum_firo.transaction import PartialTxOutput
 
@@ -167,3 +167,25 @@ class TestSparkSendDrafts(SparkQtTestCase):
                 self.assertFalse(window.has_payment_draft())
                 for i, tx in enumerate(txs):
                     self.assertEqual('Only submitted parts' if i < accepted else '', window.wallet.get_label(tx.txid()))
+
+    def test_spend_with_unknown_outcome_is_reserved_and_a_rejected_one_is_not(self):
+        window = self.open_wallet()
+        tx = mock.Mock()
+        tx.txid.return_value = 'spend-id'
+        tx._spark_used_tags = ['tag']
+        path = 'electrum_firo.gui.qt.main_window.WaitingDialog'
+        for error, reserved in [(TxBroadcastServerReturnedError('rejected'), False),
+                                (BestEffortRequestFailed(), True),
+                                (TimeoutError(), True)]:
+            with self.subTest(error=error):
+                network = SimpleNamespace(is_connected=lambda: False, proxy=None,
+                                          run_from_another_thread=mock.Mock(side_effect=error))
+                with mock.patch.object(window, 'network', network), \
+                        mock.patch.object(window.wallet, 'confirmSendSpark') as confirm, \
+                        mock.patch.object(window.wallet.psman, 'broadcast_transaction', new=mock.Mock()), \
+                        mock.patch(path) as waiting:
+                    window.broadcast_transaction(tx, None)
+                    work, finish = waiting.call_args.args[2:4]
+                    finish(work())
+                self.assertEqual(reserved, confirm.called)
+                self.assertEqual(reserved, 'reserved' in window.show_error.call_args.args[0])

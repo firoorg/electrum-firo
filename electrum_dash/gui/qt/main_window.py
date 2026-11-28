@@ -78,7 +78,9 @@ from electrum_firo.wallet import (Multisig_Wallet, Abstract_Wallet,
                                   sweep_preparations, InternalAddressCorruption)
 from electrum_firo.version import ELECTRUM_VERSION
 from electrum_firo.network import (Network, TxBroadcastError, BestEffortRequestFailed,
+                                   TxBroadcastServerReturnedError,
                                    UntrustedServerReturnedError, NetworkException)
+from electrum_firo.dash_ps_util import PSPossibleDoubleSpendError, PSSpendToPSAddressesError
 from electrum_firo.exchange_rate import FxThread
 from electrum_firo.simple_config import SimpleConfig
 from electrum_firo.spark_interface import is_exchange_address, spark_mint_amount
@@ -2759,6 +2761,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 return False, _("Invoice has expired")
             need_broadcast = True if not pr or pr.need_broadcast_tx else False
             txid = tx.txid()
+            # A Spark spend that the server did not reject may have been
+            # relayed: None tells broadcast_done to reserve its coins.
+            failed = None if getattr(tx, '_spark_used_tags', None) else False
             try:
                 if need_broadcast:
                     coro = self.wallet.psman.broadcast_transaction(tx)
@@ -2766,10 +2771,19 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                 else:
                     self.logger.info(f'Do not broadcast: {txid}, send bip70'
                                      f' Payment msg to: {pr.payment_url}')
-            except TxBroadcastError as e:
+            except TxBroadcastServerReturnedError as e:
                 return False, e.get_message_for_gui()
+            except TxBroadcastError as e:
+                return failed, e.get_message_for_gui()
             except BestEffortRequestFailed as e:
-                return False, repr(e)
+                return failed, repr(e)
+            except (PSPossibleDoubleSpendError, PSSpendToPSAddressesError):
+                raise  # raised before anything is sent
+            except Exception as e:
+                # e.g. a timeout: no reply cannot establish whether the server accepted it.
+                if failed is False:
+                    raise
+                return failed, repr(e)
             # success
             if pr:
                 self.payment_request = None
@@ -2799,6 +2813,17 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger):
                     self.clear_submitted_draft(submitted_draft)
                     parent.show_message(_('Payment sent.') + '\n' + msg)
                     self.invoice_list.update()
+                elif success is None:
+                    self.wallet.confirmSendSpark(tx)
+                    self.update_send_mode_balance()
+                    self.need_update.set()
+                    self.clear_submitted_draft(submitted_draft)
+                    parent.show_error(
+                        _('The server did not confirm this payment, so it may or may not have been sent.')
+                        + '\n' + _('Its Spark coins are reserved. They are released automatically '
+                                   'if the transaction does not appear on the network.')
+                        + '\n' + _('Check the status of transaction {txid} before sending again.').format(txid=tx.txid())
+                        + '\n\n' + (msg or ''))
                 else:
                     msg = msg or ''
                     parent.show_error(msg)
