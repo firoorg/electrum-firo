@@ -26,10 +26,8 @@ class SequentialTestCase(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.test_lock.acquire()
-
-    def tearDown(self):
-        super().tearDown()
-        self.test_lock.release()
+        # release via cleanup so a failing setUp in a subclass can't deadlock the suite
+        self.addCleanup(self.test_lock.release)
 
 
 class ElectrumTestCase(SequentialTestCase):

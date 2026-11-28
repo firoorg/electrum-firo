@@ -25,7 +25,7 @@ try:
     from electrum_firo.gui.qt import update_checker
     from electrum_firo.plugin import Plugins
     from electrum_firo.storage import WalletStorage
-    from electrum_firo.util import InvalidPassword
+    from electrum_firo.util import InvalidPassword, UserCancelled, print_stderr
     from electrum_firo.wallet import Wallet
     from electrum_firo.wallet_db import WalletDB
 except ImportError as e:

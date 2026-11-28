@@ -1,0 +1,36 @@
+name: Run tests
+
+on:
+  push:
+    branches:
+    - master
+  pull_request:
+
+jobs:
+  run_tests:
+    # 22.04 ships libsecp256k1.so.0, which electrum_firo/ecc_fast.py loads.
+    runs-on: ubuntu-22.04
+    name: Run tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # python-bls 0.1.10 does not build on 3.11+.
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecp256k1-dev
+          python -m pip install --upgrade pip wheel flake8
+          # The generated payment request bindings require the older protobuf runtime.
+          python -m pip install '.[tests]' -r contrib/requirements/requirements-tests.txt 'protobuf==3.20.3'
+      - name: Run flake8
+        # --isolated: .flake8 uses inline comments that flake8 >= 6 rejects.
+        run: |
+          flake8 --isolated . --count --select=E9,F63,F7,F821,F822,F823 --show-source --statistics
+      - name: Run tests
+        # electrum_firo is a symlink to electrum_dash; point pytest at one copy.
+        run: |
+          python -m pytest -v -rxX electrum_dash/tests
